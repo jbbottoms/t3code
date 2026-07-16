@@ -1646,6 +1646,91 @@ describe("ProviderRuntimeIngestion", () => {
     expect(message?.streaming).toBe(false);
   });
 
+  it("keeps assistant messages turn-scoped when a resumed provider reuses an item id", async () => {
+    const harness = await createHarness();
+    const threadId = asThreadId("thread-1");
+    const itemId = asItemId("item-reused-after-resume");
+
+    const emitBufferedTurn = async (turnIdValue: string, text: string) => {
+      const turnId = asTurnId(turnIdValue);
+      const now = `2026-01-01T00:00:0${turnIdValue.endsWith("1") ? "1" : "2"}.000Z`;
+      harness.emit({
+        type: "turn.started",
+        eventId: asEventId(`evt-${turnIdValue}-started`),
+        provider: ProviderDriverKind.make("kimi"),
+        createdAt: now,
+        threadId,
+        turnId,
+      });
+      await waitForThread(harness.readModel, (thread) => thread.session?.activeTurnId === turnId);
+      harness.emit({
+        type: "content.delta",
+        eventId: asEventId(`evt-${turnIdValue}-delta`),
+        provider: ProviderDriverKind.make("kimi"),
+        createdAt: now,
+        threadId,
+        turnId,
+        itemId,
+        payload: { streamKind: "assistant_text", delta: text },
+      });
+      harness.emit({
+        type: "item.completed",
+        eventId: asEventId(`evt-${turnIdValue}-item-completed`),
+        provider: ProviderDriverKind.make("kimi"),
+        createdAt: now,
+        threadId,
+        turnId,
+        itemId,
+        payload: { itemType: "assistant_message", status: "completed" },
+      });
+      harness.emit({
+        type: "turn.completed",
+        eventId: asEventId(`evt-${turnIdValue}-completed`),
+        provider: ProviderDriverKind.make("kimi"),
+        createdAt: now,
+        threadId,
+        turnId,
+        payload: { state: "completed" },
+      });
+      await waitForThread(
+        harness.readModel,
+        (thread) =>
+          thread.session?.status === "ready" &&
+          thread.messages.some((message) => message.turnId === turnId && message.text === text),
+      );
+    };
+
+    await emitBufferedTurn("turn-reused-1", "first response");
+    await emitBufferedTurn("turn-reused-2", "second response");
+
+    const thread = await waitForThread(
+      harness.readModel,
+      (entry) =>
+        entry.messages.some((message) => message.text === "first response") &&
+        entry.messages.some((message) => message.text === "second response"),
+    );
+    expect(
+      thread.messages
+        .filter((message) => message.text.endsWith("response"))
+        .map((message) => ({
+          id: message.id,
+          text: message.text,
+          turnId: message.turnId,
+        })),
+    ).toEqual([
+      {
+        id: "assistant:item-reused-after-resume",
+        text: "first response",
+        turnId: "turn-reused-1",
+      },
+      {
+        id: "assistant:item-reused-after-resume:turn:turn-reused-2",
+        text: "second response",
+        turnId: "turn-reused-2",
+      },
+    ]);
+  });
+
   it("flushes and completes buffered assistant text when an approval request opens", async () => {
     const harness = await createHarness();
     const now = "2026-01-01T00:00:00.000Z";

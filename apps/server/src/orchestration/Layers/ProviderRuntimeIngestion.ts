@@ -778,10 +778,14 @@ const make = Effect.gen(function* () {
     threadId: ThreadId;
     event: ProviderRuntimeEvent;
     turnId?: TurnId;
+    baseKey?: string;
   }) =>
     Effect.gen(function* () {
       if (!input.turnId) {
-        return assistantSegmentMessageId(assistantSegmentBaseKeyFromEvent(input.event), 0);
+        return assistantSegmentMessageId(
+          input.baseKey ?? assistantSegmentBaseKeyFromEvent(input.event),
+          0,
+        );
       }
 
       const activeMessageId = yield* getActiveAssistantMessageIdForTurn(
@@ -795,7 +799,7 @@ const make = Effect.gen(function* () {
       return yield* startAssistantSegmentForTurn({
         threadId: input.threadId,
         turnId: input.turnId,
-        baseKey: assistantSegmentBaseKeyFromEvent(input.event),
+        baseKey: input.baseKey ?? assistantSegmentBaseKeyFromEvent(input.event),
       });
     });
 
@@ -1367,10 +1371,25 @@ const make = Effect.gen(function* () {
 
       if (assistantDelta && assistantDelta.length > 0) {
         const turnId = toTurnId(event.turnId);
+        const baseKey = assistantSegmentBaseKeyFromEvent(event);
+        const collisionSafeBaseKey = turnId
+          ? yield* getLoadedThreadDetail().pipe(
+              Effect.map((detailedThread) => {
+                const defaultMessageId = assistantSegmentMessageId(baseKey, 0);
+                const collidesWithAnotherTurn = detailedThread?.messages.some(
+                  (message) =>
+                    sameId(message.id, defaultMessageId) &&
+                    (message.turnId === null || !sameId(message.turnId, turnId)),
+                );
+                return collidesWithAnotherTurn ? `${baseKey}:turn:${turnId}` : baseKey;
+              }),
+            )
+          : baseKey;
         const assistantMessageId = yield* getOrCreateAssistantMessageId({
           threadId: thread.id,
           event,
           ...(turnId ? { turnId } : {}),
+          baseKey: collisionSafeBaseKey,
         });
         if (turnId) {
           yield* rememberAssistantMessageId(thread.id, turnId, assistantMessageId);
