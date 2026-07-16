@@ -2,6 +2,7 @@
 import * as NodePath from "node:path";
 import * as NodeOS from "node:os";
 import * as NodeFSP from "node:fs/promises";
+import * as NodeTimersPromises from "node:timers/promises";
 import * as NodeURL from "node:url";
 
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -144,6 +145,44 @@ async function waitForFileContent(filePath: string, attempts = 40) {
     await Effect.runPromise(Effect.yieldNow);
   }
   throw new Error(`Timed out waiting for file content at ${filePath}`);
+}
+
+async function waitForProcessIds(filePath: string, expectedCount: number, attempts = 100) {
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    try {
+      const processIds = (await NodeFSP.readFile(filePath, "utf8"))
+        .split(/\r?\n/)
+        .map((line) => Number(line.trim()))
+        .filter((processId) => Number.isSafeInteger(processId) && processId > 0);
+      if (processIds.length >= expectedCount) {
+        return processIds;
+      }
+    } catch {}
+    await NodeTimersPromises.setTimeout(10);
+  }
+  throw new Error(`Timed out waiting for ${expectedCount} process ids at ${filePath}`);
+}
+
+function processExists(processId: number): boolean {
+  try {
+    process.kill(processId, 0);
+    return true;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ESRCH") {
+      return false;
+    }
+    throw error;
+  }
+}
+
+async function waitForProcessesToExit(processIds: ReadonlyArray<number>, attempts = 100) {
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    if (processIds.every((processId) => !processExists(processId))) {
+      return;
+    }
+    await NodeTimersPromises.setTimeout(10);
+  }
+  throw new Error(`Timed out waiting for processes to exit: ${processIds.join(", ")}`);
 }
 
 function waitForJsonLogMatch(
@@ -367,12 +406,15 @@ cursorAdapterTestLayer("CursorAdapterLive", (it) => {
       const tempDir = yield* Effect.promise(() =>
         NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "cursor-adapter-exit-log-")),
       );
-      const exitLogPath = NodePath.join(tempDir, "exit.log");
+      const isWindows = NodePath.sep === "\\";
+      const lifecycleLogPath = NodePath.join(tempDir, isWindows ? "pids.log" : "exit.log");
 
       const wrapperPath = yield* Effect.promise(() =>
-        makeMockAgentWrapper({
-          T3_ACP_EXIT_LOG_PATH: exitLogPath,
-        }),
+        makeMockAgentWrapper(
+          isWindows
+            ? { T3_ACP_PID_LOG_PATH: lifecycleLogPath }
+            : { T3_ACP_EXIT_LOG_PATH: lifecycleLogPath },
+        ),
       );
       yield* settings.updateSettings({ providers: { cursor: { binaryPath: wrapperPath } } });
 
@@ -384,10 +426,18 @@ cursorAdapterTestLayer("CursorAdapterLive", (it) => {
         modelSelection: { instanceId: ProviderInstanceId.make("cursor"), model: "default" },
       });
 
+      const processIds = isWindows
+        ? yield* Effect.promise(() => waitForProcessIds(lifecycleLogPath, 1))
+        : [];
+
       yield* adapter.stopSession(threadId);
 
-      const exitLog = yield* Effect.promise(() => waitForFileContent(exitLogPath));
-      assert.include(exitLog, "SIGTERM");
+      if (isWindows) {
+        yield* Effect.promise(() => waitForProcessesToExit(processIds));
+      } else {
+        const exitLog = yield* Effect.promise(() => waitForFileContent(lifecycleLogPath));
+        assert.include(exitLog, "SIGTERM");
+      }
     }),
   );
 
@@ -401,13 +451,14 @@ cursorAdapterTestLayer("CursorAdapterLive", (it) => {
         const tempDir = yield* Effect.promise(() =>
           NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "cursor-adapter-concurrent-exit-log-")),
         );
-        const exitLogPath = NodePath.join(tempDir, "exit.log");
+        const isWindows = NodePath.sep === "\\";
+        const lifecycleLogPath = NodePath.join(tempDir, isWindows ? "pids.log" : "exit.log");
 
         const wrapperPath = yield* Effect.promise(() =>
           makeMockAgentWrapper(
-            {
-              T3_ACP_EXIT_LOG_PATH: exitLogPath,
-            },
+            isWindows
+              ? { T3_ACP_PID_LOG_PATH: lifecycleLogPath }
+              : { T3_ACP_EXIT_LOG_PATH: lifecycleLogPath },
             { initialDelaySeconds: 0.2 },
           ),
         );
@@ -436,10 +487,18 @@ cursorAdapterTestLayer("CursorAdapterLive", (it) => {
         assert.equal(firstSession.threadId, threadId);
         assert.equal(secondSession.threadId, threadId);
 
+        const processIds = isWindows
+          ? yield* Effect.promise(() => waitForProcessIds(lifecycleLogPath, 2))
+          : [];
+
         yield* adapter.stopSession(threadId);
 
-        const exitLog = yield* Effect.promise(() => waitForFileContent(exitLogPath));
-        assert.equal(exitLog.match(/SIGTERM/g)?.length ?? 0, 2);
+        if (isWindows) {
+          yield* Effect.promise(() => waitForProcessesToExit(processIds));
+        } else {
+          const exitLog = yield* Effect.promise(() => waitForFileContent(lifecycleLogPath));
+          assert.equal(exitLog.match(/SIGTERM/g)?.length ?? 0, 2);
+        }
       }),
   );
 

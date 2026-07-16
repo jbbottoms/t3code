@@ -14,6 +14,7 @@ import type * as AcpSchema from "effect-acp/schema";
 
 const requestLogPath = process.env.T3_ACP_REQUEST_LOG_PATH;
 const exitLogPath = process.env.T3_ACP_EXIT_LOG_PATH;
+const pidLogPath = process.env.T3_ACP_PID_LOG_PATH;
 const emitToolCalls = process.env.T3_ACP_EMIT_TOOL_CALLS === "1";
 const emitInterleavedAssistantToolCalls =
   process.env.T3_ACP_EMIT_INTERLEAVED_ASSISTANT_TOOL_CALLS === "1";
@@ -96,6 +97,10 @@ function logExit(reason: string): void {
     return;
   }
   NodeFS.appendFileSync(exitLogPath, `${reason}\n`, "utf8");
+}
+
+if (pidLogPath) {
+  NodeFS.appendFileSync(pidLogPath, `${process.pid}\n`, "utf8");
 }
 
 function writeJsonRpcNotification(method: string, params: unknown): void {
