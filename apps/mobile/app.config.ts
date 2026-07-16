@@ -11,7 +11,9 @@ const APP_VARIANT = resolveAppVariant(repoEnv.APP_VARIANT);
 const isIosPersonalTeamBuild = repoEnv.T3CODE_IOS_PERSONAL_TEAM === "1";
 
 const personalTeamBundleIdentifier = repoEnv.T3CODE_IOS_PERSONAL_TEAM_BUNDLE_ID?.trim();
+const personalTeamId = repoEnv.T3CODE_IOS_PERSONAL_TEAM_ID?.trim();
 const IOS_BUNDLE_IDENTIFIER_PATTERN = /^[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+$/;
+const IOS_TEAM_ID_PATTERN = /^[A-Z0-9]{10}$/;
 
 if (
   isIosPersonalTeamBuild &&
@@ -20,6 +22,12 @@ if (
 ) {
   throw new Error(
     "T3CODE_IOS_PERSONAL_TEAM_BUNDLE_ID must be a reverse-DNS identifier such as com.example.t3code when T3CODE_IOS_PERSONAL_TEAM=1.",
+  );
+}
+
+if (isIosPersonalTeamBuild && (!personalTeamId || !IOS_TEAM_ID_PATTERN.test(personalTeamId))) {
+  throw new Error(
+    "T3CODE_IOS_PERSONAL_TEAM_ID must be the 10-character Apple team identifier when T3CODE_IOS_PERSONAL_TEAM=1.",
   );
 }
 
@@ -84,6 +92,10 @@ function resolveAppVariant(value: string | undefined): AppVariant {
 }
 
 const variant = VARIANT_CONFIG[APP_VARIANT];
+const iosBundleIdentifier = isIosPersonalTeamBuild
+  ? personalTeamBundleIdentifier!
+  : variant.iosBundleIdentifier;
+const iosAppleTeamId = isIosPersonalTeamBuild ? personalTeamId! : "ARK85ZXQ4Z";
 
 const dmSansFonts = {
   regular: "@expo-google-fonts/dm-sans/400Regular/DMSans_400Regular.ttf",
@@ -94,8 +106,8 @@ const dmSansFonts = {
 const widgetsPlugin: NonNullable<ExpoConfig["plugins"]>[number] = [
   "expo-widgets",
   {
-    bundleIdentifier: `${variant.iosBundleIdentifier}.widgets`,
-    groupIdentifier: `group.${variant.iosBundleIdentifier}`,
+    bundleIdentifier: `${iosBundleIdentifier}.widgets`,
+    groupIdentifier: `group.${iosBundleIdentifier}`,
     enablePushNotifications: true,
     // Agent activity can update many times an hour; without the
     // frequent-updates entitlement iOS throttles the update budget sooner.
@@ -140,11 +152,11 @@ const config: ExpoConfig = {
   ios: {
     icon: variant.assets.iosIcon,
     supportsTablet: true,
-    bundleIdentifier: variant.iosBundleIdentifier,
+    bundleIdentifier: iosBundleIdentifier,
     // Pin code signing to the T3 Tools team so non-interactive `expo run:ios`
     // does not fall back to a personal team (which cannot sign app groups,
     // Sign in with Apple, or push notification entitlements).
-    appleTeamId: "ARK85ZXQ4Z",
+    appleTeamId: iosAppleTeamId,
     associatedDomains: [
       `applinks:${variant.relyingParty}`,
       `webcredentials:${variant.relyingParty}`,
