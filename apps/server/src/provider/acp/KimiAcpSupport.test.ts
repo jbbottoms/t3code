@@ -1,6 +1,6 @@
 import { describe, expect, it } from "@effect/vitest";
 
-import { buildKimiAcpSpawnInput } from "./KimiAcpSupport.ts";
+import { buildKimiAcpSpawnInput, KIMI_ACP_CLIENT_CAPABILITIES } from "./KimiAcpSupport.ts";
 
 describe("buildKimiAcpSpawnInput", () => {
   it("launches the configured Kimi binary in ACP mode with actor-bound environment", () => {
@@ -23,6 +23,12 @@ describe("buildKimiAcpSpawnInput", () => {
       command: "kimi",
       args: ["acp"],
       cwd: "/project",
+    });
+  });
+
+  it("owns its standard ACP model-picker capability metadata", () => {
+    expect(KIMI_ACP_CLIENT_CAPABILITIES).toEqual({
+      _meta: { parameterizedModelPicker: true },
     });
   });
 });

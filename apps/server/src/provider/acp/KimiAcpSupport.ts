@@ -1,15 +1,21 @@
-import type { CursorSettings } from "@t3tools/contracts";
+import type { KimiSettings } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Scope from "effect/Scope";
 import * as ChildProcessSpawner from "effect/unstable/process/ChildProcessSpawner";
 import type * as EffectAcpErrors from "effect-acp/errors";
+import type * as EffectAcpSchema from "effect-acp/schema";
 
-import { CURSOR_PARAMETERIZED_MODEL_PICKER_CAPABILITIES } from "../Layers/CursorProvider.ts";
 import * as AcpSessionRuntime from "./AcpSessionRuntime.ts";
 import type { CursorAcpRuntimeInput } from "./CursorAcpSupport.ts";
 
-type KimiAcpSettings = Pick<CursorSettings, "binaryPath">;
+type KimiAcpSettings = Pick<KimiSettings, "binaryPath">;
+
+export const KIMI_ACP_CLIENT_CAPABILITIES = {
+  _meta: {
+    parameterizedModelPicker: true,
+  },
+} satisfies NonNullable<EffectAcpSchema.InitializeRequest["clientCapabilities"]>;
 
 export function buildKimiAcpSpawnInput(
   settings: KimiAcpSettings | null | undefined,
@@ -37,7 +43,7 @@ export const makeKimiAcpRuntime = (
         ...input,
         spawn: buildKimiAcpSpawnInput(input.cursorSettings, input.cwd, input.environment),
         authMethodId: "login",
-        clientCapabilities: CURSOR_PARAMETERIZED_MODEL_PICKER_CAPABILITIES,
+        clientCapabilities: KIMI_ACP_CLIENT_CAPABILITIES,
       }).pipe(
         Layer.provide(
           Layer.succeed(ChildProcessSpawner.ChildProcessSpawner, input.childProcessSpawner),
