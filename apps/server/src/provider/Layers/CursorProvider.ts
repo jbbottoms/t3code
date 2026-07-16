@@ -651,7 +651,7 @@ export function buildCursorProviderSnapshot(input: {
       input.cursorSettings.customModels,
       EMPTY_CAPABILITIES,
     ),
-    slashCommands: input.slashCommands,
+    ...(input.slashCommands ? { slashCommands: input.slashCommands } : {}),
     probe: {
       installed: true,
       version: input.parsed.version,

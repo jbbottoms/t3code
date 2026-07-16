@@ -21,13 +21,10 @@ const emitAskQuestion = process.env.T3_ACP_EMIT_ASK_QUESTION === "1";
 const emitXAiAskUserQuestion = process.env.T3_ACP_EMIT_XAI_ASK_USER_QUESTION === "1";
 const emitXAiPromptCompleteThenHang = process.env.T3_ACP_EMIT_XAI_PROMPT_COMPLETE_THEN_HANG === "1";
 const emitForeignSessionUpdates = process.env.T3_ACP_EMIT_FOREIGN_SESSION_UPDATES === "1";
-const emitAvailableCommandsOnCreate =
-  process.env.T3_ACP_EMIT_AVAILABLE_COMMANDS_ON_CREATE === "1";
+const emitAvailableCommandsOnCreate = process.env.T3_ACP_EMIT_AVAILABLE_COMMANDS_ON_CREATE === "1";
 const emitForeignAvailableCommandsOnCreate =
   process.env.T3_ACP_EMIT_FOREIGN_AVAILABLE_COMMANDS_ON_CREATE === "1";
-const delayAvailableCommandsMs = Number(
-  process.env.T3_ACP_DELAY_AVAILABLE_COMMANDS_MS ?? "0",
-);
+const delayAvailableCommandsMs = Number(process.env.T3_ACP_DELAY_AVAILABLE_COMMANDS_MS ?? "0");
 const hangPromptForever = process.env.T3_ACP_HANG_PROMPT_FOREVER === "1";
 const hangFirstPromptForever = process.env.T3_ACP_HANG_FIRST_PROMPT_FOREVER === "1";
 const emitLateUpdateAfterCancel = process.env.T3_ACP_EMIT_LATE_UPDATE_AFTER_CANCEL === "1";
@@ -338,7 +335,10 @@ const program = Effect.gen(function* () {
     Effect.gen(function* () {
       if (emitAvailableCommandsOnCreate) {
         if (delayAvailableCommandsMs > 0) {
-          setTimeout(() => emitAvailableCommandsUpdate(sessionId), delayAvailableCommandsMs);
+          yield* Effect.sleep(`${delayAvailableCommandsMs} millis`).pipe(
+            Effect.andThen(Effect.sync(() => emitAvailableCommandsUpdate(sessionId))),
+            Effect.forkDaemon,
+          );
         } else {
           emitAvailableCommandsUpdate(sessionId);
         }
