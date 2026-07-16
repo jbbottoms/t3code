@@ -46,7 +46,7 @@ async function makeMockAgentWrapper(
   options?: { initialDelaySeconds?: number },
 ) {
   const dir = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "cursor-acp-mock-"));
-  const isWindows = process.platform === "win32";
+  const isWindows = NodePath.sep === "\\";
   const wrapperPath = NodePath.join(dir, isWindows ? "fake-agent.cmd" : "fake-agent.sh");
   if (isWindows) {
     const envAssignments = Object.entries(extraEnv ?? {})
@@ -80,7 +80,7 @@ async function makeProbeWrapper(
   extraEnv?: Record<string, string>,
 ) {
   const dir = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "cursor-acp-probe-"));
-  const isWindows = process.platform === "win32";
+  const isWindows = NodePath.sep === "\\";
   const wrapperPath = NodePath.join(dir, isWindows ? "fake-agent.cmd" : "fake-agent.sh");
   if (isWindows) {
     const envAssignments = Object.entries(extraEnv ?? {})
