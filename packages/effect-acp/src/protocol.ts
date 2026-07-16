@@ -517,18 +517,28 @@ export const makeAcpPatchedProtocol = Effect.fn("makeAcpPatchedProtocol")(functi
     method: string,
     payload: unknown,
   ) {
-    // Effect RPC models JSON-RPC notifications as a Request with an empty id,
-    // but its NDJSON encoder serializes that sentinel as `"id":""`. JSON-RPC
-    // requires notifications to omit `id` entirely, and strict ACP agents
-    // reject the empty-id frame as an invalid request. Keep the internal
-    // Request tag for the shared encoder while leaving the field absent.
+    // Effect RPC has no first-class notification message. Its NDJSON encoder
+    // turns a Request without an id into `"id":null` (and an empty id into
+    // `"id":""`), both of which strict ACP agents reject as requests. Emit the
+    // standards-compliant notification frame directly: no id and no RPC
+    // headers extension.
     const notification = {
       _tag: "Request",
       tag: method,
       payload,
-      headers: [],
-    } as unknown as RpcMessage.FromClientEncoded;
-    yield* offerOutgoing(notification);
+    };
+    yield* logProtocol({
+      direction: "outgoing",
+      stage: "decoded",
+      payload: notification,
+    });
+    const encoded = `${JSON.stringify({ jsonrpc: "2.0", method, params: payload })}\n`;
+    yield* logProtocol({
+      direction: "outgoing",
+      stage: "raw",
+      payload: encoded,
+    });
+    yield* Queue.offer(outgoing, encoded).pipe(Effect.asVoid);
   });
 
   const sendRequest = Effect.fn("sendRequest")(function* (method: string, payload: unknown) {
