@@ -824,9 +824,9 @@ export const make = (
             if (Option.isSome(activePromptFiber)) {
               yield* Fiber.interrupt(activePromptFiber.value).pipe(Effect.ignore);
             }
-            yield* acp.agent
-              .cancel({ sessionId: started.sessionId })
-              .pipe(Effect.ignore, Effect.forkIn(runtimeScope));
+            // Do not report cancellation before the standards-compliant ACP
+            // notification has at least been queued to the agent transport.
+            yield* acp.agent.cancel({ sessionId: started.sessionId });
           }),
         ),
       ),
