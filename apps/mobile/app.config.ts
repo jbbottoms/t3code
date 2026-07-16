@@ -227,7 +227,7 @@ const config: ExpoConfig = {
               color: variant.assets.androidNotificationColor,
               mode: APP_VARIANT === "development" ? "development" : "production",
             },
-          ] as const,
+          ] as [string, Record<string, unknown>],
         ]
       : []),
     // appleSignIn must be gated here: withoutIosPersonalTeamCapabilities.cjs runs before
