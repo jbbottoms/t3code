@@ -1,4 +1,3 @@
-import { isLiquidGlassSupported, LiquidGlassView } from "@callstack/liquid-glass";
 import type { ComposerTriggerKind } from "@t3tools/shared/composerTrigger";
 import type { ServerProviderSkill, ServerProviderSlashCommand } from "@t3tools/contracts";
 import { SymbolView } from "../../components/AppSymbol";
@@ -50,38 +49,27 @@ function PopoverSurface(props: {
   readonly isDarkMode: boolean;
   readonly style?: ViewStyle;
 }) {
-  const baseStyle: ViewStyle = {
+  const surfaceStyle: ViewStyle = {
     borderRadius: 16,
     overflow: "hidden",
-    ...props.style,
+    backgroundColor: props.isDarkMode ? "#1c1c1e" : "#ffffff",
+    borderWidth: 1,
+    borderColor: props.isDarkMode ? "rgba(255,255,255,0.12)" : "rgba(0,0,0,0.08)",
   };
-
-  if (isLiquidGlassSupported) {
-    return (
-      <LiquidGlassView
-        effect="clear"
-        interactive={false}
-        tintColor={props.isDarkMode ? "rgba(30,30,32,0.95)" : "rgba(255,255,255,0.92)"}
-        colorScheme={props.isDarkMode ? "dark" : "light"}
-        style={baseStyle}
-      >
-        {props.children}
-      </LiquidGlassView>
-    );
-  }
 
   return (
     <View
-      style={[
-        baseStyle,
-        {
-          backgroundColor: props.isDarkMode ? "rgba(44,44,46,0.96)" : "rgba(255,255,255,0.96)",
-          borderWidth: 1,
-          borderColor: props.isDarkMode ? "rgba(255,255,255,0.08)" : "rgba(0,0,0,0.06)",
-        },
-      ]}
+      style={{
+        borderRadius: 16,
+        shadowColor: "#000000",
+        shadowOpacity: props.isDarkMode ? 0.4 : 0.14,
+        shadowRadius: 18,
+        shadowOffset: { width: 0, height: 8 },
+        elevation: 12,
+        ...props.style,
+      }}
     >
-      {props.children}
+      <View style={surfaceStyle}>{props.children}</View>
     </View>
   );
 }

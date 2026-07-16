@@ -881,6 +881,23 @@ const make = Effect.gen(function* () {
 
     // Orchestration turn ids are not provider turn ids, so interrupt by session.
     yield* providerService.interruptTurn({ threadId: event.payload.threadId });
+
+    // Interrupt is an acknowledged lifecycle transition, not merely a provider
+    // side effect. A recovered adapter can have no in-memory active turn to
+    // emit `turn.completed` for (for example, after a server restart), while
+    // the durable projection still says the old turn is running. Reconcile the
+    // projection here so clients do not keep showing an inert Stop action.
+    yield* setThreadSession({
+      threadId: thread.id,
+      session: {
+        ...thread.session,
+        status: "ready",
+        activeTurnId: null,
+        lastError: null,
+        updatedAt: event.payload.createdAt,
+      },
+      createdAt: event.payload.createdAt,
+    });
   });
 
   const processApprovalResponseRequested = Effect.fn("processApprovalResponseRequested")(function* (
