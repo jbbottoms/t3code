@@ -155,6 +155,7 @@ describe("AcpSessionRuntime", () => {
       ),
       Effect.scoped,
       Effect.provide(NodeServices.layer),
+      TestClock.withLive,
     ),
   );
 
