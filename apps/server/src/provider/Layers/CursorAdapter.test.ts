@@ -46,7 +46,21 @@ async function makeMockAgentWrapper(
   options?: { initialDelaySeconds?: number },
 ) {
   const dir = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "cursor-acp-mock-"));
-  const wrapperPath = NodePath.join(dir, "fake-agent.sh");
+  const isWindows = process.platform === "win32";
+  const wrapperPath = NodePath.join(dir, isWindows ? "fake-agent.cmd" : "fake-agent.sh");
+  if (isWindows) {
+    const envAssignments = Object.entries(extraEnv ?? {})
+      .map(([key, value]) => `set "${key}=${value}"`)
+      .join("\r\n");
+    const delayMilliseconds = (options?.initialDelaySeconds ?? 0) * 1_000;
+    const script = `@echo off\r
+${envAssignments}\r
+${delayMilliseconds > 0 ? `node -e "setTimeout(() => {}, ${delayMilliseconds})"` : ""}\r
+node ${JSON.stringify(mockAgentPath)} %*\r
+`;
+    await NodeFSP.writeFile(wrapperPath, script, "utf8");
+    return wrapperPath;
+  }
   const envExports = Object.entries(extraEnv ?? {})
     .map(([key, value]) => `export ${key}=${JSON.stringify(value)}`)
     .join("\n");
@@ -66,7 +80,21 @@ async function makeProbeWrapper(
   extraEnv?: Record<string, string>,
 ) {
   const dir = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "cursor-acp-probe-"));
-  const wrapperPath = NodePath.join(dir, "fake-agent.sh");
+  const isWindows = process.platform === "win32";
+  const wrapperPath = NodePath.join(dir, isWindows ? "fake-agent.cmd" : "fake-agent.sh");
+  if (isWindows) {
+    const envAssignments = Object.entries(extraEnv ?? {})
+      .map(([key, value]) => `set "${key}=${value}"`)
+      .join("\r\n");
+    const script = `@echo off\r
+echo %*>>${JSON.stringify(argvLogPath)}\r
+set "T3_ACP_REQUEST_LOG_PATH=${requestLogPath}"\r
+${envAssignments}\r
+node ${JSON.stringify(mockAgentPath)} %*\r
+`;
+    await NodeFSP.writeFile(wrapperPath, script, "utf8");
+    return wrapperPath;
+  }
   const envExports = Object.entries(extraEnv ?? {})
     .map(([key, value]) => `export ${key}=${JSON.stringify(value)}`)
     .join("\n");
@@ -88,7 +116,12 @@ async function readArgvLog(filePath: string) {
     .split("\n")
     .map((line) => line.trim())
     .filter((line) => line.length > 0)
-    .map((line) => line.split("\t").filter((token) => token.length > 0));
+    .map((line) =>
+      line
+        .split(/\s+/)
+        .map((token) => token.replace(/^"(.*)"$/, "$1"))
+        .filter((token) => token.length > 0),
+    );
 }
 
 async function readJsonLines(filePath: string) {
@@ -945,6 +978,56 @@ cursorAdapterTestLayer("CursorAdapterLive", (it) => {
         assert.equal(String(assistantDeltas[1].itemId), String(assistantStarts[1].itemId));
       }
 
+      yield* adapter.stopSession(threadId);
+    }),
+  );
+
+  it.effect("registers the ACP prompt before turn.started so immediate Stop cancels it", () =>
+    Effect.gen(function* () {
+      const adapter = yield* CursorAdapter;
+      const serverSettings = yield* ServerSettingsService;
+      const threadId = ThreadId.make("cursor-immediate-stop-probe");
+      const wrapperPath = yield* Effect.promise(() =>
+        makeMockAgentWrapper({ T3_ACP_PROMPT_DELAY_MS: "1500" }),
+      );
+      yield* serverSettings.updateSettings({ providers: { cursor: { binaryPath: wrapperPath } } });
+
+      const turnCompletedReady = yield* Deferred.make<ProviderRuntimeEvent>();
+      let interrupted = false;
+      const runtimeEventsFiber = yield* Stream.runForEach(adapter.streamEvents, (event) =>
+        Effect.gen(function* () {
+          if (String(event.threadId) !== String(threadId)) return;
+          if (event.type === "turn.started" && !interrupted) {
+            interrupted = true;
+            yield* adapter.interruptTurn(threadId);
+            return;
+          }
+          if (event.type === "turn.completed") {
+            yield* Deferred.succeed(turnCompletedReady, event).pipe(Effect.ignore);
+          }
+        }),
+      ).pipe(Effect.forkChild);
+
+      yield* adapter.startSession({
+        threadId,
+        provider: ProviderDriverKind.make("cursor"),
+        cwd: process.cwd(),
+        runtimeMode: "full-access",
+        modelSelection: { instanceId: ProviderInstanceId.make("cursor"), model: "default" },
+      });
+
+      const sendTurnFiber = yield* adapter
+        .sendTurn({ threadId, input: "stop immediately", attachments: [] })
+        .pipe(Effect.forkChild);
+      const turnCompleted = yield* Deferred.await(turnCompletedReady);
+      yield* Fiber.join(sendTurnFiber);
+      yield* Fiber.interrupt(runtimeEventsFiber);
+
+      assert.equal(turnCompleted.type, "turn.completed");
+      if (turnCompleted.type === "turn.completed") {
+        assert.equal(turnCompleted.payload.state, "cancelled");
+        assert.equal(turnCompleted.payload.stopReason, "cancelled");
+      }
       yield* adapter.stopSession(threadId);
     }),
   );

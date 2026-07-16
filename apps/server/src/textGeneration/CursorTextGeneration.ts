@@ -37,9 +37,15 @@ const isTextGenerationError = Schema.is(TextGenerationError);
 export const makeCursorTextGeneration = Effect.fn("makeCursorTextGeneration")(function* (
   cursorSettings: CursorSettings,
   environment?: NodeJS.ProcessEnv,
+  options?: {
+    readonly makeAcpRuntime?: typeof makeCursorAcpRuntime;
+    readonly providerLabel?: string;
+  },
 ) {
   const commandSpawner = yield* ChildProcessSpawner.ChildProcessSpawner;
   const resolvedEnvironment = environment ?? process.env;
+  const makeAcpRuntime = options?.makeAcpRuntime ?? makeCursorAcpRuntime;
+  const providerLabel = options?.providerLabel ?? "Cursor";
 
   const runCursorJson = <S extends Schema.Top>({
     operation,
@@ -60,7 +66,7 @@ export const makeCursorTextGeneration = Effect.fn("makeCursorTextGeneration")(fu
   }): Effect.Effect<S["Type"], TextGenerationError, S["DecodingServices"]> =>
     Effect.gen(function* () {
       const outputRef = yield* Ref.make("");
-      const runtime = yield* makeCursorAcpRuntime({
+      const runtime = yield* makeAcpRuntime({
         cursorSettings,
         environment: resolvedEnvironment,
         childProcessSpawner: commandSpawner,
@@ -92,8 +98,8 @@ export const makeCursorTextGeneration = Effect.fn("makeCursorTextGeneration")(fu
               operation,
               detail:
                 step === "set-config-option"
-                  ? `Failed to set Cursor ACP config option "${configId}" for text generation.`
-                  : "Failed to set Cursor ACP base model for text generation.",
+                  ? `Failed to set ${providerLabel} ACP config option "${configId}" for text generation.`
+                  : `Failed to set ${providerLabel} ACP base model for text generation.`,
               cause,
             }),
         });
@@ -109,7 +115,7 @@ export const makeCursorTextGeneration = Effect.fn("makeCursorTextGeneration")(fu
               Effect.fail(
                 new TextGenerationError({
                   operation,
-                  detail: "Cursor Agent request timed out.",
+                  detail: `${providerLabel} request timed out.`,
                 }),
               ),
             onSome: (value) => Effect.succeed(value),
@@ -120,7 +126,7 @@ export const makeCursorTextGeneration = Effect.fn("makeCursorTextGeneration")(fu
             ? cause
             : new TextGenerationError({
                 operation,
-                detail: "Cursor ACP request failed.",
+                detail: `${providerLabel} ACP request failed.`,
                 cause,
               }),
         ),
@@ -132,8 +138,8 @@ export const makeCursorTextGeneration = Effect.fn("makeCursorTextGeneration")(fu
           operation,
           detail:
             promptResult.stopReason === "cancelled"
-              ? "Cursor ACP request was cancelled."
-              : "Cursor Agent returned empty output.",
+              ? `${providerLabel} ACP request was cancelled.`
+              : `${providerLabel} returned empty output.`,
         });
       }
 
@@ -144,7 +150,7 @@ export const makeCursorTextGeneration = Effect.fn("makeCursorTextGeneration")(fu
             Effect.fail(
               new TextGenerationError({
                 operation,
-                detail: "Cursor Agent returned invalid structured output.",
+                detail: `${providerLabel} returned invalid structured output.`,
                 cause,
               }),
             ),
@@ -156,7 +162,7 @@ export const makeCursorTextGeneration = Effect.fn("makeCursorTextGeneration")(fu
           ? cause
           : new TextGenerationError({
               operation,
-              detail: "Cursor ACP text generation failed.",
+              detail: `${providerLabel} ACP text generation failed.`,
               cause,
             }),
       ),

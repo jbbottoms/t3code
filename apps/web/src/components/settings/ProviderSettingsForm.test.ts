@@ -36,6 +36,13 @@ describe("ProviderSettingsForm helpers", () => {
     });
   });
 
+  it("exposes Kimi as a configurable first-class driver", () => {
+    const kimi = DRIVER_OPTION_BY_VALUE[ProviderDriverKind.make("kimi")];
+
+    expect(kimi).toMatchObject({ label: "Kimi", badgeLabel: "Early Access" });
+    expect(deriveProviderSettingsFields(kimi!).map((field) => field.key)).toEqual(["binaryPath"]);
+  });
+
   it("preserves unknown config keys while omitting empty configurable fields", () => {
     const opencode = DRIVER_OPTION_BY_VALUE[ProviderDriverKind.make("opencode")];
     expect(opencode).toBeDefined();

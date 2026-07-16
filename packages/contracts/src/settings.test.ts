@@ -42,6 +42,7 @@ describe("ServerSettings.providerInstances (slice-2 invariant)", () => {
     // Legacy `providers` struct is still hydrated with its per-driver defaults
     // so existing call sites keep working through the migration.
     expect(decoded.providers.codex.enabled).toBe(true);
+    expect(decoded.providers.kimi.enabled).toBe(false);
   });
 
   it("decodes a multi-instance map mixing first-party and fork drivers", () => {
@@ -126,6 +127,31 @@ describe("ServerSettingsPatch.providerInstances", () => {
     });
     const ollamaId = ProviderInstanceId.make("ollama_local");
     expect(patch.providerInstances?.[ollamaId]?.driver).toBe("ollama");
+  });
+});
+
+describe("ServerSettingsPatch.providers.kimi", () => {
+  it("decodes the first-class legacy bridge without enabling Kimi by default", () => {
+    const defaults = decodeServerSettings({});
+    expect(defaults.providers.kimi.enabled).toBe(false);
+
+    const patch = decodeServerSettingsPatch({
+      providers: {
+        kimi: {
+          enabled: true,
+          binaryPath: "  C:\\Tools\\Kimi\\kimi.exe  ",
+          apiEndpoint: "  https://api.kimi.example  ",
+          customModels: ["kimi-code/k3"],
+        },
+      },
+    });
+
+    expect(patch.providers?.kimi).toEqual({
+      enabled: true,
+      binaryPath: "C:\\Tools\\Kimi\\kimi.exe",
+      apiEndpoint: "https://api.kimi.example",
+      customModels: ["kimi-code/k3"],
+    });
   });
 });
 
