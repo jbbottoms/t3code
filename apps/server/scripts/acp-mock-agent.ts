@@ -3,6 +3,7 @@
 import * as NodeFS from "node:fs";
 
 import * as Effect from "effect/Effect";
+import * as Duration from "effect/Duration";
 
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
@@ -335,9 +336,9 @@ const program = Effect.gen(function* () {
     Effect.gen(function* () {
       if (emitAvailableCommandsOnCreate) {
         if (delayAvailableCommandsMs > 0) {
-          yield* Effect.sleep(`${delayAvailableCommandsMs} millis`).pipe(
+          yield* Effect.sleep(Duration.millis(delayAvailableCommandsMs)).pipe(
             Effect.andThen(Effect.sync(() => emitAvailableCommandsUpdate(sessionId))),
-            Effect.forkDaemon,
+            Effect.forkDetach,
           );
         } else {
           emitAvailableCommandsUpdate(sessionId);
