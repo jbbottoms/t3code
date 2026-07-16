@@ -1028,6 +1028,11 @@ cursorAdapterTestLayer("CursorAdapterLive", (it) => {
         assert.equal(turnCompleted.payload.state, "cancelled");
         assert.equal(turnCompleted.payload.stopReason, "cancelled");
       }
+      const settledSession = (yield* adapter.listSessions()).find(
+        (session) => session.threadId === threadId,
+      );
+      assert.equal(settledSession?.status, "ready");
+      assert.isUndefined(settledSession?.activeTurnId);
       yield* adapter.stopSession(threadId);
     }),
   );

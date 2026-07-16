@@ -680,15 +680,23 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
         ...(input.modelSelection?.model ? { "provider.model": input.modelSelection.model } : {}),
       });
       const turn = yield* routed.adapter.sendTurn(input);
+      const liveSession = (yield* routed.adapter.listSessions()).find(
+        (session) => session.threadId === input.threadId,
+      );
+      const turnStillActive = liveSession === undefined || liveSession.activeTurnId !== undefined;
       yield* directory.upsert({
         threadId: input.threadId,
         provider: routed.adapter.provider,
         providerInstanceId: routed.instanceId,
         status: "running",
-        ...(turn.resumeCursor !== undefined ? { resumeCursor: turn.resumeCursor } : {}),
+        ...(turn.resumeCursor !== undefined
+          ? { resumeCursor: turn.resumeCursor }
+          : liveSession?.resumeCursor !== undefined
+            ? { resumeCursor: liveSession.resumeCursor }
+            : {}),
         runtimePayload: {
           ...(input.modelSelection !== undefined ? { modelSelection: input.modelSelection } : {}),
-          activeTurnId: turn.turnId,
+          activeTurnId: turnStillActive ? (liveSession?.activeTurnId ?? turn.turnId) : null,
           lastRuntimeEvent: "provider.sendTurn",
           lastRuntimeEventAt: yield* nowIso,
         },

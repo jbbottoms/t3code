@@ -115,7 +115,8 @@ function makeFakeCodexAdapter(provider: ProviderDriverKind = CODEX_DRIVER) {
     (
       input: ProviderSendTurnInput,
     ): Effect.Effect<ProviderTurnStartResult, ProviderAdapterError> => {
-      if (!sessions.has(input.threadId)) {
+      const existing = sessions.get(input.threadId);
+      if (!existing) {
         return Effect.fail(
           new ProviderAdapterSessionNotFoundError({
             provider,
@@ -124,10 +125,13 @@ function makeFakeCodexAdapter(provider: ProviderDriverKind = CODEX_DRIVER) {
         );
       }
 
-      return Effect.succeed({
-        threadId: input.threadId,
-        turnId: TurnId.make(`turn-${String(input.threadId)}`),
+      const turnId = TurnId.make(`turn-${String(input.threadId)}`);
+      sessions.set(input.threadId, {
+        ...existing,
+        status: "running",
+        activeTurnId: turnId,
       });
+      return Effect.succeed({ threadId: input.threadId, turnId });
     },
   );
 
@@ -1279,6 +1283,46 @@ routing.layer("ProviderServiceLive routing", (it) => {
           assert.equal(runtimePayload.lastError, null);
           assert.equal(runtimePayload.lastRuntimeEvent, "provider.sendTurn");
         }
+      }
+    }),
+  );
+
+  it.effect("persists a settled adapter turn as ready with no active turn", () =>
+    Effect.gen(function* () {
+      const provider = yield* ProviderService.ProviderService;
+      const runtimeRepository = yield* ProviderSessionRuntime.ProviderSessionRuntimeRepository;
+      const threadId = asThreadId("thread-runtime-settled");
+
+      yield* provider.startSession(threadId, {
+        provider: ProviderDriverKind.make("codex"),
+        providerInstanceId: codexInstanceId,
+        threadId,
+        runtimeMode: "full-access",
+      });
+      routing.codex.sendTurn.mockImplementationOnce((input) =>
+        Effect.sync(() => {
+          routing.codex.updateSession(input.threadId, (session) => ({
+            ...session,
+            status: "ready",
+            activeTurnId: undefined,
+          }));
+          return {
+            threadId: input.threadId,
+            turnId: TurnId.make(`turn-${String(input.threadId)}`),
+          };
+        }),
+      );
+
+      yield* provider.sendTurn({ threadId, input: "settle", attachments: [] });
+
+      const persisted = yield* runtimeRepository.getByThreadId({ threadId });
+      assert.equal(Option.isSome(persisted), true);
+      if (Option.isSome(persisted)) {
+        assert.equal(persisted.value.status, "running");
+        assert.equal(
+          (persisted.value.runtimePayload as { activeTurnId?: string | null } | null)?.activeTurnId,
+          null,
+        );
       }
     }),
   );

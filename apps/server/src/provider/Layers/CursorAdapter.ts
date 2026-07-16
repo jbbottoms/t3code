@@ -1066,6 +1066,15 @@ export function makeCursorAdapter(
                 stopReason: result.stopReason ?? null,
               },
             });
+            if (ctx.activeTurnId === turnId) {
+              ctx.activeTurnId = undefined;
+              ctx.session = {
+                ...ctx.session,
+                status: "ready",
+                activeTurnId: undefined,
+                updatedAt: yield* nowIso,
+              };
+            }
           }
 
           return {
