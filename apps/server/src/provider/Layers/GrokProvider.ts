@@ -44,6 +44,7 @@ const EMPTY_CAPABILITIES: ModelCapabilities = createModelCapabilities({
 
 const VERSION_PROBE_TIMEOUT_MS = 4_000;
 const GROK_ACP_MODEL_DISCOVERY_TIMEOUT_MS = 15_000;
+const GROK_ACP_SLASH_COMMAND_DISCOVERY_TIMEOUT_MS = 1_000;
 
 const GROK_BUILT_IN_MODELS: ReadonlyArray<ServerProviderModel> = [
   {
@@ -143,7 +144,11 @@ const discoverGrokModelsViaAcp = (
       clientInfo: { name: "t3-code-provider-probe", version: "0.0.0" },
     });
     const started = yield* acp.start();
-    return buildGrokDiscoveredModelsFromSessionModelState(started.sessionSetupResult.models);
+    yield* acp.waitForSlashCommands(GROK_ACP_SLASH_COMMAND_DISCOVERY_TIMEOUT_MS);
+    return {
+      models: buildGrokDiscoveredModelsFromSessionModelState(started.sessionSetupResult.models),
+      slashCommands: yield* acp.getSlashCommands,
+    };
   }).pipe(Effect.scoped);
 
 const runGrokVersionCommand = (
@@ -293,7 +298,8 @@ export const checkGrokProviderStatus = Effect.fn("checkGrokProviderStatus")(func
       },
     });
   }
-  const discoveredModels = discoveryExit.value.value;
+  const discovered = discoveryExit.value.value;
+  const discoveredModels = discovered.models;
   const models =
     discoveredModels.length > 0
       ? grokModelsFromSettings(grokSettings.customModels, discoveredModels)
@@ -304,6 +310,7 @@ export const checkGrokProviderStatus = Effect.fn("checkGrokProviderStatus")(func
     enabled: grokSettings.enabled,
     checkedAt,
     models,
+    slashCommands: discovered.slashCommands,
     probe: {
       installed: true,
       version,

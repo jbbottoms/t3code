@@ -6,6 +6,7 @@ import {
   extractModelConfigId,
   mergeToolCallState,
   parsePermissionRequest,
+  parseAvailableCommandsUpdate,
   parseSessionModeState,
   parseSessionUpdateEvent,
   sessionUpdateIsReplay,
@@ -81,6 +82,52 @@ describe("AcpRuntimeModel", () => {
         },
       } satisfies EffectAcpSchema.SessionNotification),
     ).toBe(false);
+  });
+
+  it("normalizes the standard ACP command catalog for provider snapshots", () => {
+    const commands = parseAvailableCommandsUpdate({
+      sessionUpdate: "available_commands_update",
+      availableCommands: [
+        {
+          name: " /goal ",
+          description: " Inspect or update the goal ",
+          input: { hint: " status | ... " },
+        },
+        {
+          name: "goal",
+          description: "",
+          input: null,
+        },
+        {
+          name: " /empty ",
+          description: " ",
+          input: { hint: " " },
+        },
+        { name: "   ", description: "ignored" },
+      ],
+    });
+
+    expect(commands).toEqual([
+      {
+        name: "goal",
+        description: "Inspect or update the goal",
+        input: { hint: "status | ..." },
+      },
+      { name: "empty" },
+    ]);
+  });
+
+  it("preserves an empty catalog update so agents can clear stale commands", () => {
+    const result = parseSessionUpdateEvent({
+      sessionId: "session-1",
+      update: {
+        sessionUpdate: "available_commands_update",
+        availableCommands: [],
+      },
+    } satisfies EffectAcpSchema.SessionNotification);
+
+    expect(result.availableCommands).toEqual([]);
+    expect(result.events).toEqual([]);
   });
 
   it("builds a synthetic load response from initialize model state", () => {

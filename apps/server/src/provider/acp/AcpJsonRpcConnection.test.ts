@@ -65,6 +65,99 @@ describe("AcpSessionRuntime", () => {
     );
   });
 
+  it.effect("captures a command catalog emitted before session/new resolves", () =>
+    Effect.gen(function* () {
+      const runtime = yield* AcpSessionRuntime.AcpSessionRuntime;
+      const started = yield* runtime.start();
+
+      expect(started.sessionId).toBe("mock-session-1");
+      expect(yield* runtime.getSlashCommands).toEqual([
+        {
+          name: "goal",
+          description: "Inspect or update the active goal.",
+          input: { hint: "status | ..." },
+        },
+      ]);
+    }).pipe(
+      Effect.provide(
+        AcpSessionRuntime.layer({
+          spawn: {
+            command: mockAgentCommand,
+            args: mockAgentArgs,
+            env: {
+              T3_ACP_EMIT_AVAILABLE_COMMANDS_ON_CREATE: "1",
+            },
+          },
+          cwd: process.cwd(),
+          clientInfo: { name: "t3-test", version: "0.0.0" },
+          authMethodId: "test",
+        }),
+      ),
+      Effect.scoped,
+      Effect.provide(NodeServices.layer),
+    ),
+  );
+
+  it.effect("waits for a delayed root command catalog but ignores foreign sessions", () =>
+    Effect.gen(function* () {
+      const runtime = yield* AcpSessionRuntime.AcpSessionRuntime;
+      yield* runtime.start();
+      const commands = yield* runtime.waitForSlashCommands("500 millis");
+
+      expect(commands).toEqual([
+        {
+          name: "goal",
+          description: "Inspect or update the active goal.",
+          input: { hint: "status | ..." },
+        },
+      ]);
+    }).pipe(
+      Effect.provide(
+        AcpSessionRuntime.layer({
+          spawn: {
+            command: mockAgentCommand,
+            args: mockAgentArgs,
+            env: {
+              T3_ACP_EMIT_AVAILABLE_COMMANDS_ON_CREATE: "1",
+              T3_ACP_DELAY_AVAILABLE_COMMANDS_MS: "50",
+              T3_ACP_EMIT_FOREIGN_AVAILABLE_COMMANDS_ON_CREATE: "1",
+            },
+          },
+          cwd: process.cwd(),
+          clientInfo: { name: "t3-test", version: "0.0.0" },
+          authMethodId: "test",
+        }),
+      ),
+      Effect.scoped,
+      Effect.provide(NodeServices.layer),
+    ),
+  );
+
+  it.effect("does not resolve the root waiter for a foreign command catalog", () =>
+    Effect.gen(function* () {
+      const runtime = yield* AcpSessionRuntime.AcpSessionRuntime;
+      yield* runtime.start();
+      expect(yield* runtime.waitForSlashCommands("50 millis")).toEqual([]);
+    }).pipe(
+      Effect.provide(
+        AcpSessionRuntime.layer({
+          spawn: {
+            command: mockAgentCommand,
+            args: mockAgentArgs,
+            env: {
+              T3_ACP_EMIT_FOREIGN_AVAILABLE_COMMANDS_ON_CREATE: "1",
+            },
+          },
+          cwd: process.cwd(),
+          clientInfo: { name: "t3-test", version: "0.0.0" },
+          authMethodId: "test",
+        }),
+      ),
+      Effect.scoped,
+      Effect.provide(NodeServices.layer),
+    ),
+  );
+
   it.effect("starts a session, prompts, and emits normalized events against the mock agent", () =>
     Effect.gen(function* () {
       const runtime = yield* AcpSessionRuntime.AcpSessionRuntime;

@@ -5,7 +5,7 @@ import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
 import type * as EffectAcpSchema from "effect-acp/schema";
 import { deriveToolActivityPresentation } from "@t3tools/shared/toolActivity";
-import type { ToolLifecycleItemType } from "@t3tools/contracts";
+import type { ServerProviderSlashCommand, ToolLifecycleItemType } from "@t3tools/contracts";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -119,6 +119,62 @@ type AcpToolCallUpdate = Extract<
   EffectAcpSchema.SessionNotification["update"],
   { readonly sessionUpdate: "tool_call" | "tool_call_update" }
 >;
+
+type AcpAvailableCommandsUpdate = Extract<
+  EffectAcpSchema.SessionNotification["update"],
+  { readonly sessionUpdate: "available_commands_update" }
+>;
+
+function normalizeSlashCommandName(value: unknown): string | undefined {
+  if (typeof value !== "string") {
+    return undefined;
+  }
+  const name = value.trim().replace(/^\/+/, "");
+  return name.length > 0 ? name : undefined;
+}
+
+/**
+ * Converts the standard ACP available-command catalog to the server contract.
+ * ACP agents have historically reported both `goal` and `/goal`; the server
+ * contract stores the command token without the leading slash because clients
+ * add the slash when rendering/inserting the command.
+ */
+export function parseAvailableCommandsUpdate(
+  update: AcpAvailableCommandsUpdate,
+): ReadonlyArray<ServerProviderSlashCommand> {
+  const commandsByName = new Map<string, ServerProviderSlashCommand>();
+
+  for (const command of update.availableCommands) {
+    const name = normalizeSlashCommandName(command.name);
+    if (!name) {
+      continue;
+    }
+
+    const description = command.description.trim() || undefined;
+    const inputHint =
+      command.input && typeof command.input.hint === "string"
+        ? command.input.hint.trim() || undefined
+        : undefined;
+    const key = name.toLowerCase();
+    const existing = commandsByName.get(key);
+    if (!existing) {
+      commandsByName.set(key, {
+        name,
+        ...(description ? { description } : {}),
+        ...(inputHint ? { input: { hint: inputHint } } : {}),
+      });
+      continue;
+    }
+
+    commandsByName.set(key, {
+      ...existing,
+      ...(existing.description ? {} : description ? { description } : {}),
+      ...(existing.input?.hint ? {} : inputHint ? { input: { hint: inputHint } } : {}),
+    });
+  }
+
+  return [...commandsByName.values()];
+}
 
 export function extractModelConfigId(sessionResponse: AcpSessionSetupResponse): string | undefined {
   const configOptions = sessionResponse.configOptions;
@@ -507,11 +563,14 @@ export function syntheticLoadSessionResponseFromInitialize(
 
 export function parseSessionUpdateEvent(params: EffectAcpSchema.SessionNotification): {
   readonly modeId?: string;
+  /** Present (including as an empty array) for `available_commands_update`. */
+  readonly availableCommands?: ReadonlyArray<ServerProviderSlashCommand>;
   readonly events: ReadonlyArray<AcpParsedSessionEvent>;
 } {
   const upd = params.update;
   const events: Array<AcpParsedSessionEvent> = [];
   let modeId: string | undefined;
+  let availableCommands: ReadonlyArray<ServerProviderSlashCommand> | undefined;
 
   switch (upd.sessionUpdate) {
     case "current_mode_update": {
@@ -574,9 +633,17 @@ export function parseSessionUpdateEvent(params: EffectAcpSchema.SessionNotificat
       }
       break;
     }
+    case "available_commands_update": {
+      availableCommands = parseAvailableCommandsUpdate(upd);
+      break;
+    }
     default:
       break;
   }
 
-  return { ...(modeId !== undefined ? { modeId } : {}), events };
+  return {
+    ...(modeId !== undefined ? { modeId } : {}),
+    ...(availableCommands !== undefined ? { availableCommands } : {}),
+    events,
+  };
 }

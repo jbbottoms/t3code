@@ -6,6 +6,7 @@ import type {
   ServerProvider,
   ServerProviderAuth,
   ServerProviderModel,
+  ServerProviderSlashCommand,
   ServerProviderState,
 } from "@t3tools/contracts";
 import { ProviderDriverKind } from "@t3tools/contracts";
@@ -61,6 +62,7 @@ const EMPTY_CAPABILITIES: ModelCapabilities = createModelCapabilities({
 });
 
 const CURSOR_ACP_MODEL_DISCOVERY_TIMEOUT_MS = 15_000;
+const CURSOR_ACP_SLASH_COMMAND_DISCOVERY_TIMEOUT_MS = 1_000;
 const CURSOR_PARAMETERIZED_MODEL_PICKER_MIN_VERSION_DATE = 2026_04_08;
 const CURSOR_CLI_INSTALLATION_DOCS_URL = "https://cursor.com/docs/cli/installation";
 const CURSOR_ACP_MODEL_DISCOVERY_FAILED_MESSAGE = [
@@ -551,7 +553,7 @@ export function resolveCursorAcpConfigUpdates(
   return updates;
 }
 
-const discoverCursorModelsViaListAvailableModels = (
+const discoverCursorCapabilitiesViaAcp = (
   cursorSettings: CursorSettings,
   environment?: NodeJS.ProcessEnv,
 ) =>
@@ -560,9 +562,13 @@ const discoverCursorModelsViaListAvailableModels = (
     (acp) =>
       Effect.gen(function* () {
         yield* acp.start();
+        yield* acp.waitForSlashCommands(CURSOR_ACP_SLASH_COMMAND_DISCOVERY_TIMEOUT_MS);
         const response = yield* acp.request("cursor/list_available_models", {});
         const decoded = yield* decodeCursorListAvailableModelsResponse(response);
-        return buildCursorDiscoveredModelsFromAvailableModelsResponse(decoded);
+        return {
+          models: buildCursorDiscoveredModelsFromAvailableModelsResponse(decoded),
+          slashCommands: yield* acp.getSlashCommands,
+        };
       }),
     environment,
   );
@@ -570,7 +576,10 @@ const discoverCursorModelsViaListAvailableModels = (
 export const discoverCursorModelsViaAcp = (
   cursorSettings: CursorSettings,
   environment?: NodeJS.ProcessEnv,
-) => discoverCursorModelsViaListAvailableModels(cursorSettings, environment);
+) =>
+  discoverCursorCapabilitiesViaAcp(cursorSettings, environment).pipe(
+    Effect.map((discovered) => discovered.models),
+  );
 
 export function getCursorFallbackModels(
   cursorSettings: Pick<CursorSettings, "customModels">,
@@ -628,6 +637,7 @@ export function buildCursorProviderSnapshot(input: {
   readonly cursorSettings: CursorSettings;
   readonly parsed: CursorAboutResult;
   readonly discoveredModels?: ReadonlyArray<ServerProviderModel>;
+  readonly slashCommands?: ReadonlyArray<ServerProviderSlashCommand>;
   readonly discoveryWarning?: string;
 }): ServerProviderDraft {
   const message = joinProviderMessages(input.parsed.message, input.discoveryWarning);
@@ -641,6 +651,7 @@ export function buildCursorProviderSnapshot(input: {
       input.cursorSettings.customModels,
       EMPTY_CAPABILITIES,
     ),
+    slashCommands: input.slashCommands,
     probe: {
       installed: true,
       version: input.parsed.version,
@@ -1083,10 +1094,11 @@ export const checkCursorProviderStatus = Effect.fn("checkCursorProviderStatus")(
     });
   }
   let discoveredModels = Option.none<ReadonlyArray<ServerProviderModel>>();
+  let discoveredSlashCommands: ReadonlyArray<ServerProviderSlashCommand> = [];
   let discoveryWarning: string | undefined;
   if (parsed.auth.status !== "unauthenticated") {
     const discoveryExit = yield* Effect.exit(
-      discoverCursorModelsViaAcp(cursorSettings, environment).pipe(
+      discoverCursorCapabilitiesViaAcp(cursorSettings, environment).pipe(
         Effect.timeoutOption(CURSOR_ACP_MODEL_DISCOVERY_TIMEOUT_MS),
       ),
     );
@@ -1097,10 +1109,14 @@ export const checkCursorProviderStatus = Effect.fn("checkCursorProviderStatus")(
       discoveryWarning = CURSOR_ACP_MODEL_DISCOVERY_FAILED_MESSAGE;
     } else if (Option.isNone(discoveryExit.value)) {
       discoveryWarning = `Cursor ACP model discovery timed out after ${CURSOR_ACP_MODEL_DISCOVERY_TIMEOUT_MS}ms.`;
-    } else if (discoveryExit.value.value.length === 0) {
-      discoveryWarning = "Cursor ACP model discovery returned no built-in models.";
     } else {
-      discoveredModels = discoveryExit.value;
+      const discovered = discoveryExit.value.value;
+      discoveredSlashCommands = discovered.slashCommands;
+      if (discovered.models.length === 0) {
+        discoveryWarning = "Cursor ACP model discovery returned no built-in models.";
+      } else {
+        discoveredModels = Option.some(discovered.models);
+      }
     }
   }
   return buildCursorProviderSnapshot({
@@ -1111,6 +1127,7 @@ export const checkCursorProviderStatus = Effect.fn("checkCursorProviderStatus")(
       Option.filter(discoveredModels, (models) => models.length > 0),
       () => [] as const,
     ),
+    slashCommands: discoveredSlashCommands,
     ...(discoveryWarning ? { discoveryWarning } : {}),
   });
 });

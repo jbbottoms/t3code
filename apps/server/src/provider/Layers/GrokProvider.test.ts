@@ -107,4 +107,48 @@ it.layer(NodeServices.layer)("checkGrokProviderStatus", (it) => {
       expect(snapshot.message).toContain("ACP startup failed");
     }),
   );
+
+  it.effect("publishes standard ACP slash commands from the Grok probe", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const dir = yield* fs.makeTempDirectoryScoped({ prefix: "t3code-grok-commands-" });
+        const mockAgentPath = yield* path.fromFileUrl(
+          new URL("../../../scripts/acp-mock-agent.ts", import.meta.url),
+        );
+        const grokPath = path.join(dir, "grok");
+        const mockAgentCommand = ["node", mockAgentPath]
+          .map((arg) => JSON.stringify(arg))
+          .join(" ");
+        yield* fs.writeFileString(
+          grokPath,
+          [
+            "#!/bin/sh",
+            'if [ "$1" = "--version" ]; then printf "grok-cli 0.0.99\\n"; exit 0; fi',
+            `exec ${mockAgentCommand} "$@"`,
+            "",
+          ].join("\n"),
+        );
+        yield* fs.chmod(grokPath, 0o755);
+
+        const snapshot = yield* checkGrokProviderStatus(
+          decodeGrokSettings({ enabled: true, binaryPath: grokPath }),
+          {
+            ...process.env,
+            T3_ACP_EMIT_AVAILABLE_COMMANDS_ON_CREATE: "1",
+          },
+        );
+
+        expect(snapshot.status).toBe("ready");
+        expect(snapshot.slashCommands).toEqual([
+          {
+            name: "goal",
+            description: "Inspect or update the active goal.",
+            input: { hint: "status | ..." },
+          },
+        ]);
+      }),
+    ),
+  );
 });

@@ -322,6 +322,35 @@ describe("getCursorFallbackModels", () => {
 });
 
 describe("buildCursorProviderSnapshot", () => {
+  it("publishes the ACP command catalog alongside discovered models", () => {
+    expect(
+      buildCursorProviderSnapshot({
+        checkedAt: "2026-01-01T00:00:00.000Z",
+        cursorSettings: baseCursorSettings,
+        parsed: {
+          version: "2026.04.09-f2b0fcd",
+          status: "ready",
+          auth: { status: "authenticated" },
+        },
+        slashCommands: [
+          {
+            name: "goal",
+            description: "Inspect or update the active goal.",
+            input: { hint: "status | ..." },
+          },
+        ],
+      }),
+    ).toMatchObject({
+      slashCommands: [
+        {
+          name: "goal",
+          description: "Inspect or update the active goal.",
+          input: { hint: "status | ..." },
+        },
+      ],
+    });
+  });
+
   it("downgrades ready status to warning when ACP model discovery times out", () => {
     expect(
       buildCursorProviderSnapshot({
@@ -459,6 +488,7 @@ describe("checkCursorProviderStatus", () => {
         {
           ...process.env,
           T3_ACP_REQUEST_LOG_PATH: requestLogPath,
+          T3_ACP_EMIT_AVAILABLE_COMMANDS_ON_CREATE: "1",
         },
       ),
     );
@@ -468,6 +498,13 @@ describe("checkCursorProviderStatus", () => {
       "composer-2",
       "gpt-5.4",
       "claude-opus-4-6",
+    ]);
+    expect(provider.slashCommands).toEqual([
+      {
+        name: "goal",
+        description: "Inspect or update the active goal.",
+        input: { hint: "status | ..." },
+      },
     ]);
     await expect(runNode(waitForFileContent(requestLogPath))).resolves.toContain("initialize");
   });

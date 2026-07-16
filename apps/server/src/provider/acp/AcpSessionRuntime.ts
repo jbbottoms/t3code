@@ -34,6 +34,7 @@ import {
   type AcpSessionModeState,
   type AcpToolCallState,
 } from "./AcpRuntimeModel.ts";
+import type { ServerProviderSlashCommand } from "@t3tools/contracts";
 
 function formatConfigOptionValue(value: string | boolean): string {
   return JSON.stringify(value);
@@ -186,6 +187,15 @@ export class AcpSessionRuntime extends Context.Service<
     readonly getModeState: Effect.Effect<AcpSessionModeState | undefined>;
     /** Latest configuration options observed from session setup and configuration writes. */
     readonly getConfigOptions: Effect.Effect<ReadonlyArray<EffectAcpSchema.SessionConfigOption>>;
+    /** Latest standard ACP available-command catalog observed for this session. */
+    readonly getSlashCommands: Effect.Effect<ReadonlyArray<ServerProviderSlashCommand>>;
+    /**
+     * Waits for the first standard ACP command catalog, or until the bounded
+     * timeout elapses when an agent does not advertise commands.
+     */
+    readonly waitForSlashCommands: (
+      timeout?: Duration.Input,
+    ) => Effect.Effect<ReadonlyArray<ServerProviderSlashCommand>>;
     /**
      * Sends a prompt turn to the active session.
      * @see https://agentclientprotocol.com/protocol/schema#session/prompt
@@ -280,6 +290,14 @@ export const make = (
     const toolCallsRef = yield* Ref.make(new Map<string, AcpToolCallState>());
     const assistantSegmentRef = yield* Ref.make<AcpAssistantSegmentState>({ nextSegmentIndex: 0 });
     const configOptionsRef = yield* Ref.make(sessionConfigOptionsFromSetup(undefined));
+    const slashCommandsRef = yield* Ref.make<ReadonlyArray<ServerProviderSlashCommand>>([]);
+    // Notifications can arrive while `session/new` or `session/load` is still
+    // resolving. Keep catalogs keyed by session id until startup establishes
+    // the root session and flips startStateRef to Started.
+    const pendingSlashCommandsRef = yield* Ref.make(
+      new Map<string, ReadonlyArray<ServerProviderSlashCommand>>(),
+    );
+    const slashCommandsObserved = yield* Deferred.make<void>();
     const startStateRef = yield* Ref.make<AcpStartState>({ _tag: "NotStarted" });
     const promptSerializationSemaphore = yield* Semaphore.make(1);
     const activePromptFiberRef = yield* Ref.make<
@@ -356,8 +374,51 @@ export const make = (
 
     const acp = yield* Effect.service(EffectAcpClient.AcpClient).pipe(Effect.provide(acpContext));
 
+    const promotePendingSlashCommands = (sessionId: string): Effect.Effect<void> =>
+      Ref.modify(pendingSlashCommandsRef, (pending) => {
+        const commands = pending.get(sessionId);
+        if (commands === undefined) {
+          return [undefined, pending] as const;
+        }
+        const next = new Map(pending);
+        next.delete(sessionId);
+        return [commands, next] as const;
+      }).pipe(
+        Effect.flatMap((commands) =>
+          commands === undefined
+            ? Effect.void
+            : Ref.set(slashCommandsRef, commands).pipe(
+                Effect.andThen(Deferred.succeed(slashCommandsObserved, undefined)),
+                Effect.asVoid,
+              ),
+        ),
+      );
+
     yield* acp.handleSessionUpdate((notification) =>
       Effect.gen(function* () {
+        const parsed = parseSessionUpdateEvent(notification);
+        if (parsed.availableCommands !== undefined) {
+          const startState = yield* Ref.get(startStateRef);
+          if (startState._tag === "Started") {
+            // A runtime owns one root session. Ignore catalogs from child or
+            // unrelated sessions once that root is known.
+            if (notification.sessionId === startState.result.sessionId) {
+              yield* Ref.set(slashCommandsRef, parsed.availableCommands).pipe(
+                Effect.andThen(Deferred.succeed(slashCommandsObserved, undefined)),
+                Effect.asVoid,
+              );
+            }
+          } else {
+            // `available_commands_update` is commonly emitted immediately
+            // after `session/new`, before start() can publish Started.
+            yield* Ref.update(pendingSlashCommandsRef, (pending) => {
+              const next = new Map(pending);
+              next.set(notification.sessionId, parsed.availableCommands!);
+              return next;
+            });
+          }
+        }
+
         const gate = yield* Ref.get(sessionLoadGateRef);
         if (Option.isSome(gate) && gate.value.active) {
           const lastActivityAtMillis = yield* Clock.currentTimeMillis;
@@ -388,6 +449,7 @@ export const make = (
           toolCallsRef,
           assistantSegmentRef,
           params: notification,
+          parsed,
         });
       }),
     );
@@ -517,6 +579,8 @@ export const make = (
       );
 
     const startOnce = Effect.gen(function* () {
+      yield* Ref.set(slashCommandsRef, []);
+      yield* Ref.set(pendingSlashCommandsRef, new Map());
       const initializePayload = {
         protocolVersion: 1,
         clientCapabilities: initializeClientCapabilities,
@@ -634,6 +698,7 @@ export const make = (
 
       yield* Ref.set(modeStateRef, parseSessionModeState(sessionSetupResult));
       yield* Ref.set(configOptionsRef, sessionConfigOptionsFromSetup(sessionSetupResult));
+      yield* promotePendingSlashCommands(sessionId);
 
       const nextState = {
         sessionId,
@@ -659,7 +724,8 @@ export const make = (
             return [
               startOnce.pipe(
                 Effect.tap((result) =>
-                  Ref.set(startStateRef, { _tag: "Started", result }).pipe(
+                  promotePendingSlashCommands(result.sessionId).pipe(
+                    Effect.andThen(Ref.set(startStateRef, { _tag: "Started", result })),
                     Effect.andThen(Deferred.succeed(deferred, result)),
                   ),
                 ),
@@ -704,6 +770,11 @@ export const make = (
       }),
       getModeState: Ref.get(modeStateRef),
       getConfigOptions: Ref.get(configOptionsRef),
+      getSlashCommands: Ref.get(slashCommandsRef),
+      waitForSlashCommands: (timeout = Duration.seconds(1)) =>
+        Effect.raceFirst(Deferred.await(slashCommandsObserved), Effect.sleep(timeout)).pipe(
+          Effect.flatMap(() => Ref.get(slashCommandsRef)),
+        ),
       prompt: (payload) =>
         promptSerializationSemaphore.withPermit(
           Effect.gen(function* () {
@@ -835,15 +906,16 @@ const handleSessionUpdate = ({
   toolCallsRef,
   assistantSegmentRef,
   params,
+  parsed,
 }: {
   readonly queue: Queue.Queue<AcpSessionRuntimeEvent>;
   readonly modeStateRef: Ref.Ref<AcpSessionModeState | undefined>;
   readonly toolCallsRef: Ref.Ref<Map<string, AcpToolCallState>>;
   readonly assistantSegmentRef: Ref.Ref<AcpAssistantSegmentState>;
   readonly params: EffectAcpSchema.SessionNotification;
+  readonly parsed: ReturnType<typeof parseSessionUpdateEvent>;
 }): Effect.Effect<void> =>
   Effect.gen(function* () {
-    const parsed = parseSessionUpdateEvent(params);
     if (parsed.modeId) {
       yield* Ref.update(modeStateRef, (current) =>
         current === undefined ? current : updateModeState(current, parsed.modeId!),
