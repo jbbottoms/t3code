@@ -21,11 +21,17 @@ import {
 describe("appearancePreferences", () => {
   it("resolves defaults for empty stored preferences", () => {
     expect(resolveAppearancePreferences({})).toEqual({
+      themeId: "system",
       baseFontSize: DEFAULT_BASE_FONT_SIZE,
       terminalFontSize: null,
       codeFontSize: null,
       codeWordBreak: false,
     });
+  });
+
+  it("keeps a valid mobile theme and rejects unknown persisted values", () => {
+    expect(resolveAppearancePreferences({ themeId: "dracula" }).themeId).toBe("dracula");
+    expect(resolveAppearancePreferences({ themeId: "future-theme" }).themeId).toBe("system");
   });
 
   it("migrates the legacy markdownFontSize key to baseFontSize", () => {

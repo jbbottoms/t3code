@@ -27,7 +27,10 @@ export function TerminalAppearanceSection() {
 
   return (
     <SettingsSection card title="Terminal">
-      <TerminalAppearancePreview fontSize={appearance.terminalFontSize} />
+      <TerminalAppearancePreview
+        fontSize={appearance.terminalFontSize}
+        themeId={appearance.themeId}
+      />
       <AppearancePreviewSeparator />
       <SettingsSwitchRow
         disabled={!isReady}

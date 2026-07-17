@@ -12,6 +12,12 @@ import {
   type AppearancePreferences,
   type ResolvedAppearance,
 } from "../../../lib/appearancePreferences";
+import {
+  resolveMobileThemeOption,
+  resolveMobileThemeVariables,
+  type MobileThemeId,
+  type MobileThemeScheme,
+} from "../../../lib/mobileThemes";
 import { mobilePreferencesAtom, updateMobilePreferencesAtom } from "../../../state/preferences";
 import { cacheTerminalFontSize } from "../../terminal/terminalUiState";
 
@@ -19,6 +25,7 @@ interface AppearancePreferencesContextValue {
   /** Effective values with base-size derivation applied. Use this for rendering. */
   readonly appearance: ResolvedAppearance;
   readonly isReady: boolean;
+  readonly setThemeId: (value: MobileThemeId) => void;
   readonly setBaseFontSize: (value: number) => void;
   /** Pass null to clear the override and follow the base font size. */
   readonly setTerminalFontSize: (value: number | null) => void;
@@ -34,16 +41,18 @@ const AppearancePreferencesContext = createContext<AppearancePreferencesContextV
  * className-based text size (`text-sm`, `text-base`, ...) re-resolves live.
  * Updates the current theme last so the active stylesheet settles correctly.
  */
-function applyTextScaleVariables(baseFontSize: number) {
-  const variables = resolveTextScaleVariables(baseFontSize);
-  const currentTheme = Uniwind.currentTheme;
+function applyAppearanceVariables(preferences: AppearancePreferences) {
+  const textVariables = resolveTextScaleVariables(preferences.baseFontSize);
 
-  for (const theme of ["light", "dark"] as const) {
-    if (theme !== currentTheme) {
-      Uniwind.updateCSSVariables(theme, variables);
-    }
+  for (const scheme of ["light", "dark"] as const satisfies readonly MobileThemeScheme[]) {
+    Uniwind.updateCSSVariables(scheme, {
+      ...resolveMobileThemeVariables(preferences.themeId, scheme),
+      ...textVariables,
+    });
   }
-  Uniwind.updateCSSVariables(currentTheme, variables);
+
+  const selected = resolveMobileThemeOption(preferences.themeId).scheme;
+  Uniwind.setTheme(selected === "system" ? "system" : selected);
 }
 
 export function AppearancePreferencesProvider(props: { readonly children: ReactNode }) {
@@ -59,7 +68,7 @@ export function AppearancePreferencesProvider(props: { readonly children: ReactN
   const isReady = AsyncResult.isSuccess(preferencesResult) && !preferencesResult.waiting;
 
   useEffect(() => {
-    applyTextScaleVariables(preferences.baseFontSize);
+    applyAppearanceVariables(preferences);
     cacheTerminalFontSize(resolveAppearance(preferences).terminalFontSize);
   }, [preferences]);
 
@@ -73,6 +82,13 @@ export function AppearancePreferencesProvider(props: { readonly children: ReactN
   const setBaseFontSize = useCallback(
     (value: number) => {
       updatePreferences({ baseFontSize: value });
+    },
+    [updatePreferences],
+  );
+
+  const setThemeId = useCallback(
+    (value: MobileThemeId) => {
+      updatePreferences({ themeId: value });
     },
     [updatePreferences],
   );
@@ -102,12 +118,21 @@ export function AppearancePreferencesProvider(props: { readonly children: ReactN
     (): AppearancePreferencesContextValue => ({
       appearance: resolveAppearance(preferences),
       isReady,
+      setThemeId,
       setBaseFontSize,
       setTerminalFontSize,
       setCodeFontSize,
       setCodeWordBreak,
     }),
-    [preferences, isReady, setBaseFontSize, setTerminalFontSize, setCodeFontSize, setCodeWordBreak],
+    [
+      preferences,
+      isReady,
+      setThemeId,
+      setBaseFontSize,
+      setTerminalFontSize,
+      setCodeFontSize,
+      setCodeWordBreak,
+    ],
   );
 
   return (

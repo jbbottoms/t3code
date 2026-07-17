@@ -8,7 +8,12 @@ import { pipe } from "effect/Function";
 import type { ResolvedMobileCodeSurface } from "../../lib/appearancePreferences";
 import { resolveMobileCodeSurface } from "../../lib/appearancePreferences";
 import { MOBILE_CODE_SURFACE } from "../../lib/typography";
-import { getPierreTerminalTheme, type TerminalAppearanceScheme } from "../terminal/terminalTheme";
+import { resolveMobileThemePalette, type MobileThemeId } from "../../lib/mobileThemes";
+import {
+  getMobileTerminalTheme,
+  getPierreTerminalTheme,
+  type TerminalAppearanceScheme,
+} from "../terminal/terminalTheme";
 import { computeWordAltDiffRanges } from "./reviewWordDiffs";
 import {
   getReviewFilePreviewState,
@@ -112,7 +117,31 @@ function buildReviewCommentsCacheKey(comments: ReadonlyArray<ReviewInlineComment
 
 export function createNativeReviewDiffTheme(
   scheme: TerminalAppearanceScheme,
+  themeId: MobileThemeId = "system",
 ): NativeReviewDiffTheme {
+  if (themeId !== "system") {
+    const palette = resolveMobileThemePalette(themeId, scheme);
+    const terminalTheme = getMobileTerminalTheme(themeId, scheme);
+    const [, terminalRed, terminalGreen, , terminalBlue] = terminalTheme.palette;
+    const alpha = scheme === "dark" ? "24" : "1a";
+
+    return {
+      background: palette.background,
+      text: palette.foreground,
+      mutedText: palette.muted,
+      headerBackground: palette.background,
+      border: terminalTheme.border,
+      hunkBackground: palette.surfaceAlt,
+      hunkText: terminalBlue ?? palette.blue,
+      addBackground: `${terminalGreen ?? palette.green}${alpha}`,
+      deleteBackground: `${terminalRed ?? palette.red}${alpha}`,
+      addBar: terminalGreen ?? palette.green,
+      deleteBar: terminalRed ?? palette.red,
+      addText: palette.green,
+      deleteText: palette.red,
+    };
+  }
+
   const terminalTheme = getPierreTerminalTheme(scheme);
   const [, terminalRed, , , terminalBlue] = terminalTheme.palette;
 

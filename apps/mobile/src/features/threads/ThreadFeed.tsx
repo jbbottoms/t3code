@@ -1073,7 +1073,7 @@ const ReviewCommentCard = memo(function ReviewCommentCard(props: {
   readonly comment: ReviewInlineComment;
   readonly colors: ReviewCommentColors;
 }) {
-  const { codeSurface, nativeReviewDiffStyle } = useAppearanceCodeSurface();
+  const { codeSurface, nativeReviewDiffStyle, themeId } = useAppearanceCodeSurface();
   const colorScheme = useColorScheme();
   const appearanceScheme = colorScheme === "light" ? "light" : "dark";
   const NativeReviewDiffView = resolveNativeReviewDiffView();
@@ -1088,8 +1088,8 @@ const ReviewCommentCard = memo(function ReviewCommentCard(props: {
     [nativeReviewDiffData.rows],
   );
   const nativeReviewDiffTheme = useMemo(
-    () => createNativeReviewDiffTheme(appearanceScheme),
-    [appearanceScheme],
+    () => createNativeReviewDiffTheme(appearanceScheme, themeId),
+    [appearanceScheme, themeId],
   );
   const nativeRowsJson = useMemo(() => JSON.stringify(compactNativeRows), [compactNativeRows]);
   const nativeThemeJson = useMemo(

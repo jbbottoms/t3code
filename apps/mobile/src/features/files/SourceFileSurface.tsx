@@ -158,7 +158,7 @@ function NativeSourceFileSurface(
   },
 ) {
   const { NativeView, onRefresh } = props;
-  const { codeSurface, codeWordBreak, nativeSourceStyle } = useAppearanceCodeSurface();
+  const { codeSurface, codeWordBreak, nativeSourceStyle, themeId } = useAppearanceCodeSurface();
   const { width: viewportWidth } = useWindowDimensions();
   const { rowsJson, status, targetIndex, theme, tokens } = useSourceFileModel(props);
   const [isPullRefreshing, setIsPullRefreshing] = useState(false);
@@ -178,7 +178,10 @@ function NativeSourceFileSurface(
     () => JSON.stringify(targetIndex === null ? [] : [nativeSourceRowId(targetIndex)]),
     [targetIndex],
   );
-  const themeJson = useMemo(() => JSON.stringify(createNativeReviewDiffTheme(theme)), [theme]);
+  const themeJson = useMemo(
+    () => JSON.stringify(createNativeReviewDiffTheme(theme, themeId)),
+    [theme, themeId],
+  );
   const styleJson = useMemo(() => JSON.stringify(nativeSourceStyle), [nativeSourceStyle]);
   const contentWidth = codeWordBreak
     ? Math.max(240, viewportWidth - codeSurface.gutterWidth - 24)

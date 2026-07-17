@@ -6,6 +6,7 @@ import {
   TERMINAL_FONT_SIZE_STEP,
   normalizeTerminalFontSize,
 } from "../features/terminal/terminalPreferences";
+import { normalizeMobileThemeId, type MobileThemeId } from "./mobileThemes";
 
 export const DEFAULT_BASE_FONT_SIZE = MOBILE_TYPOGRAPHY.body.fontSize;
 export const MIN_BASE_FONT_SIZE = 11;
@@ -22,6 +23,7 @@ export const CODE_FONT_SIZE_STEP = 1;
  * "automatic": the value is derived from the base font size.
  */
 export interface AppearancePreferences {
+  readonly themeId: MobileThemeId;
   readonly baseFontSize: number;
   readonly terminalFontSize: number | null;
   readonly codeFontSize: number | null;
@@ -30,6 +32,7 @@ export interface AppearancePreferences {
 
 /** Effective appearance values after applying base-size derivation. */
 export interface ResolvedAppearance {
+  readonly themeId: MobileThemeId;
   readonly baseFontSize: number;
   readonly terminalFontSize: number;
   readonly codeFontSize: number;
@@ -100,6 +103,7 @@ export function deriveCodeFontSize(baseFontSize: number): number {
 }
 
 interface StoredAppearancePreferences {
+  readonly themeId?: unknown;
   readonly baseFontSize?: number | null | undefined;
   /** Legacy key from before base font size existed; migrated to baseFontSize. */
   readonly markdownFontSize?: number | null | undefined;
@@ -112,6 +116,7 @@ export function resolveAppearancePreferences(
   stored: StoredAppearancePreferences | null | undefined,
 ): AppearancePreferences {
   return {
+    themeId: normalizeMobileThemeId(stored?.themeId),
     baseFontSize: normalizeBaseFontSize(stored?.baseFontSize ?? stored?.markdownFontSize),
     terminalFontSize:
       typeof stored?.terminalFontSize === "number" && Number.isFinite(stored.terminalFontSize)
@@ -127,6 +132,7 @@ export function resolveAppearancePreferences(
 
 export function resolveAppearance(preferences: AppearancePreferences): ResolvedAppearance {
   return {
+    themeId: preferences.themeId,
     baseFontSize: preferences.baseFontSize,
     terminalFontSize:
       preferences.terminalFontSize ?? deriveTerminalFontSize(preferences.baseFontSize),

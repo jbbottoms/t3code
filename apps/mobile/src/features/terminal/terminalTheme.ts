@@ -1,3 +1,5 @@
+import { resolveMobileTerminalPalette, type MobileThemeId } from "../../lib/mobileThemes";
+
 export type TerminalAppearanceScheme = "light" | "dark";
 
 export interface TerminalTheme {
@@ -68,6 +70,15 @@ const PIERRE_DARK_THEME: TerminalTheme = {
 
 export function getPierreTerminalTheme(scheme: TerminalAppearanceScheme): TerminalTheme {
   return scheme === "light" ? PIERRE_LIGHT_THEME : PIERRE_DARK_THEME;
+}
+
+export function getMobileTerminalTheme(
+  themeId: MobileThemeId,
+  scheme: TerminalAppearanceScheme,
+): TerminalTheme {
+  return themeId === "system"
+    ? getPierreTerminalTheme(scheme)
+    : resolveMobileTerminalPalette(themeId, scheme);
 }
 
 export function buildGhosttyThemeConfig(theme: TerminalTheme): string {

@@ -31,12 +31,12 @@ export function useNativeReviewDiffBridge(input: {
     threadKey,
     viewedFileIds,
   } = input;
-  const { nativeReviewDiffStyle } = useAppearanceCodeSurface();
+  const { nativeReviewDiffStyle, themeId } = useAppearanceCodeSurface();
   const [collapsedCommentIds, setCollapsedCommentIds] = useState<ReadonlySet<string>>(
     () => new Set(),
   );
 
-  const theme = useMemo(() => createNativeReviewDiffTheme(scheme), [scheme]);
+  const theme = useMemo(() => createNativeReviewDiffTheme(scheme, themeId), [scheme, themeId]);
   const rowsJson = useMemo(() => JSON.stringify(data.rows), [data.rows]);
   const collapsedFileIdsJson = useMemo(() => JSON.stringify(collapsedFileIds), [collapsedFileIds]);
   const viewedFileIdsJson = useMemo(() => JSON.stringify(viewedFileIds), [viewedFileIds]);

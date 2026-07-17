@@ -4,6 +4,7 @@ import {
   resolveMobileCodeSurface,
   type ResolvedMobileCodeSurface,
 } from "../../../lib/appearancePreferences";
+import type { MobileThemeId } from "../../../lib/mobileThemes";
 import { createNativeReviewDiffStyle } from "../../review/nativeReviewDiffAdapter";
 import { createNativeSourceStyle } from "../../files/nativeSourceFileAdapter";
 import { useAppearancePreferences } from "./AppearancePreferencesProvider";
@@ -11,6 +12,7 @@ import { useAppearancePreferences } from "./AppearancePreferencesProvider";
 export function useAppearanceCodeSurface(): {
   readonly codeSurface: ResolvedMobileCodeSurface;
   readonly codeWordBreak: boolean;
+  readonly themeId: MobileThemeId;
   readonly nativeSourceStyle: ReturnType<typeof createNativeSourceStyle>;
   readonly nativeReviewDiffStyle: ReturnType<typeof createNativeReviewDiffStyle>;
 } {
@@ -28,6 +30,7 @@ export function useAppearanceCodeSurface(): {
   return {
     codeSurface,
     codeWordBreak: appearance.codeWordBreak,
+    themeId: appearance.themeId,
     nativeSourceStyle,
     nativeReviewDiffStyle,
   };

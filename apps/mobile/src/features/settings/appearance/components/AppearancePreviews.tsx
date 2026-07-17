@@ -6,7 +6,8 @@ import {
   resolveMobileCodeSurface,
 } from "../../../../lib/appearancePreferences";
 import { useThemeColor } from "../../../../lib/useThemeColor";
-import { getPierreTerminalTheme } from "../../../terminal/terminalTheme";
+import type { MobileThemeId } from "../../../../lib/mobileThemes";
+import { getMobileTerminalTheme } from "../../../terminal/terminalTheme";
 
 const CODE_FONT_FAMILY = Platform.select({
   ios: "ui-monospace",
@@ -45,9 +46,12 @@ export function TextAppearancePreview(props: { readonly fontSize: number }) {
  * Live terminal sample using the real terminal theme's text colors and font,
  * on the shared card background so it reads like the other previews.
  */
-export function TerminalAppearancePreview(props: { readonly fontSize: number }) {
+export function TerminalAppearancePreview(props: {
+  readonly fontSize: number;
+  readonly themeId: MobileThemeId;
+}) {
   const scheme = useColorScheme() === "light" ? "light" : "dark";
-  const theme = getPierreTerminalTheme(scheme);
+  const theme = getMobileTerminalTheme(props.themeId, scheme);
   const lineHeight = Math.round(props.fontSize * 1.6);
   const lineStyle = {
     fontFamily: "Menlo",

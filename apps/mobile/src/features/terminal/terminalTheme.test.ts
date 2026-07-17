@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vite-plus/test";
 
-import { buildGhosttyThemeConfig, getPierreTerminalTheme } from "./terminalTheme";
+import {
+  buildGhosttyThemeConfig,
+  getMobileTerminalTheme,
+  getPierreTerminalTheme,
+} from "./terminalTheme";
 
 describe("getPierreTerminalTheme", () => {
   it("returns the Pierre light terminal palette", () => {
@@ -32,5 +36,18 @@ describe("buildGhosttyThemeConfig", () => {
     expect(config).toContain("palette = 0=#141415");
     expect(config).toContain("palette = 15=#c6c6c8");
     expect(config.endsWith("\n")).toBe(true);
+  });
+});
+
+describe("getMobileTerminalTheme", () => {
+  it("maps the selected mobile theme into the native terminal palette", () => {
+    const theme = getMobileTerminalTheme("dracula", "light");
+
+    expect(theme).toMatchObject({
+      background: "#282a36",
+      foreground: "#f8f8f2",
+      cursorForeground: "#bd93f9",
+    });
+    expect(theme.palette).toHaveLength(16);
   });
 });
