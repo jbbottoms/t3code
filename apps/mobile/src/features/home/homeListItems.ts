@@ -79,6 +79,26 @@ export function nextGroupDisplayState(
 }
 
 /**
+ * Hydrate persisted collapsed groups without overwriting a tap made during the
+ * current render lifetime. Preference writes are optimistic but asynchronous;
+ * if the still-visible persisted value wins this merge, the first expansion
+ * tap appears to do nothing until storage catches up.
+ */
+export function mergePersistedCollapsedGroupStates(
+  localStates: ReadonlyMap<string, HomeGroupDisplayState>,
+  persistedCollapsedGroups: readonly string[],
+): ReadonlyMap<string, HomeGroupDisplayState> {
+  const next = new Map(localStates);
+  for (const key of persistedCollapsedGroups) {
+    if (next.has(key)) {
+      continue;
+    }
+    next.set(key, { ...DEFAULT_GROUP_DISPLAY_STATE, collapsed: true });
+  }
+  return next;
+}
+
+/**
  * Structural equality for list items. Item objects are rebuilt on every
  * collapse/show-more toggle; without this the lists would consider every
  * mounted row changed and re-render all of them (each carrying a swipeable +

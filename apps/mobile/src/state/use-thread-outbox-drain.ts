@@ -27,6 +27,7 @@ import {
   resolveThreadOutboxDeliveryAction,
   resolveThreadOutboxFailureAction,
   resolveQueuedThreadSettings,
+  selectNextThreadOutboxMessage,
   threadOutboxRetryDelayMs,
   type QueuedThreadCreation,
   type QueuedThreadMessage,
@@ -283,7 +284,19 @@ export function useThreadOutboxDrain(): void {
     }
 
     for (const [threadKey, queuedMessages] of Object.entries(queuedMessagesByThreadKey)) {
-      const nextQueuedMessage = queuedMessages[0];
+      const queueIdentity = queuedMessages[0];
+      if (!queueIdentity) {
+        continue;
+      }
+
+      const thread = findThread(threads, queueIdentity);
+      const threadStatus =
+        thread?.session?.status === "running"
+          ? "running"
+          : thread?.session?.status === "starting"
+            ? "starting"
+            : "idle";
+      const nextQueuedMessage = selectNextThreadOutboxMessage(queuedMessages, threadStatus);
       if (!nextQueuedMessage) {
         continue;
       }
@@ -294,7 +307,6 @@ export function useThreadOutboxDrain(): void {
         continue;
       }
 
-      const thread = findThread(threads, nextQueuedMessage);
       if (thread && scopedThreadKey(thread.environmentId, thread.id) !== threadKey) {
         continue;
       }
@@ -309,7 +321,9 @@ export function useThreadOutboxDrain(): void {
         threadExists: thread !== undefined,
         shellStatus,
         environmentConnected: environment?.connectionState === "connected",
-        threadBusy: thread?.session?.status === "running" || thread?.session?.status === "starting",
+        threadBusy: threadStatus !== "idle",
+        threadStarting: threadStatus === "starting",
+        deliveryMode: nextQueuedMessage.deliveryMode,
       });
       if (deliveryAction === "wait") {
         continue;

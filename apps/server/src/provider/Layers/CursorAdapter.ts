@@ -112,6 +112,10 @@ export interface CursorAdapterLiveOptions {
   readonly coalesceCumulativeToolCallUpdates?: boolean;
   /** Test override for the maximum time a cumulative tool update may remain buffered. */
   readonly cumulativeToolCallUpdateInterval?: Duration.Input;
+  /** Coalesce follow-on assistant text deltas while publishing the first delta immediately. */
+  readonly coalesceIncrementalContentDeltas?: boolean;
+  /** Test override for the maximum time a follow-on content delta may remain buffered. */
+  readonly incrementalContentDeltaInterval?: Duration.Input;
   /**
    * Selections are honored when `modelSelection.instanceId` matches this value.
    * Defaults to the legacy built-in instance id (`cursor`).
@@ -554,15 +558,23 @@ export function makeCursorAdapter(
           const pendingUserInputs = new Map<ApprovalRequestId, PendingUserInput>();
           const sessionScope = yield* Scope.make("sequential");
           let sessionScopeTransferred = false;
-          const runtimeEventCoalescer = options?.coalesceCumulativeToolCallUpdates
-            ? yield* makeCumulativeToolCallUpdateCoalescer({
-                scope: sessionScope,
-                publish: publishCoalescedRuntimeEvent,
-                ...(options.cumulativeToolCallUpdateInterval
-                  ? { interval: options.cumulativeToolCallUpdateInterval }
-                  : {}),
-              })
-            : undefined;
+          const runtimeEventCoalescer =
+            options?.coalesceCumulativeToolCallUpdates || options?.coalesceIncrementalContentDeltas
+              ? yield* makeCumulativeToolCallUpdateCoalescer({
+                  scope: sessionScope,
+                  publish: publishCoalescedRuntimeEvent,
+                  coalesceCumulativeToolCallUpdates:
+                    options?.coalesceCumulativeToolCallUpdates ?? false,
+                  coalesceIncrementalContentDeltas:
+                    options?.coalesceIncrementalContentDeltas ?? false,
+                  ...(options.cumulativeToolCallUpdateInterval
+                    ? { interval: options.cumulativeToolCallUpdateInterval }
+                    : {}),
+                  ...(options.incrementalContentDeltaInterval
+                    ? { contentDeltaInterval: options.incrementalContentDeltaInterval }
+                    : {}),
+                })
+              : undefined;
           if (runtimeEventCoalescer) {
             runtimeEventCoalescers.set(input.threadId, runtimeEventCoalescer);
           }

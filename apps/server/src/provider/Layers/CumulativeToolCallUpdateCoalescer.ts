@@ -6,8 +6,11 @@ import * as Scope from "effect/Scope";
 import * as Semaphore from "effect/Semaphore";
 
 type ItemUpdatedEvent = Extract<ProviderRuntimeEvent, { readonly type: "item.updated" }>;
+type ContentDeltaEvent = Extract<ProviderRuntimeEvent, { readonly type: "content.delta" }>;
+type BufferedRuntimeEvent = ItemUpdatedEvent | ContentDeltaEvent;
 
 export const DEFAULT_CUMULATIVE_TOOL_CALL_UPDATE_INTERVAL = Duration.millis(100);
+export const DEFAULT_INCREMENTAL_CONTENT_DELTA_INTERVAL = Duration.millis(32);
 
 export interface CumulativeToolCallUpdateCoalescer {
   readonly offer: (event: ProviderRuntimeEvent) => Effect.Effect<void>;
@@ -47,16 +50,57 @@ function canReplaceCumulativePartial(previous: ItemUpdatedEvent, next: ItemUpdat
   );
 }
 
+function isIncrementalAssistantText(event: ProviderRuntimeEvent): event is ContentDeltaEvent {
+  return (
+    event.type === "content.delta" &&
+    event.payload.streamKind === "assistant_text" &&
+    event.payload.delta.length > 0
+  );
+}
+
+function isSameContentStream(left: ContentDeltaEvent, right: ContentDeltaEvent): boolean {
+  return (
+    left.provider === right.provider &&
+    left.threadId === right.threadId &&
+    left.turnId === right.turnId &&
+    left.itemId === right.itemId &&
+    left.payload.streamKind === right.payload.streamKind &&
+    left.payload.contentIndex === right.payload.contentIndex &&
+    left.payload.summaryIndex === right.payload.summaryIndex
+  );
+}
+
+function mergeIncrementalContent(
+  previous: ContentDeltaEvent,
+  next: ContentDeltaEvent,
+): ContentDeltaEvent {
+  return {
+    ...next,
+    payload: {
+      ...next.payload,
+      delta: previous.payload.delta + next.payload.delta,
+    },
+  };
+}
+
 export const makeCumulativeToolCallUpdateCoalescer = Effect.fn(
   "makeCumulativeToolCallUpdateCoalescer",
 )(function* (input: {
   readonly scope: Scope.Scope;
+  readonly coalesceCumulativeToolCallUpdates?: boolean;
+  readonly coalesceIncrementalContentDeltas?: boolean;
   readonly interval?: Duration.Input;
+  readonly contentDeltaInterval?: Duration.Input;
   readonly publish: (event: ProviderRuntimeEvent) => Effect.Effect<void>;
 }) {
   const gate = yield* Semaphore.make(1);
-  const interval = input.interval ?? DEFAULT_CUMULATIVE_TOOL_CALL_UPDATE_INTERVAL;
-  let pending: ItemUpdatedEvent | undefined;
+  const coalesceCumulativeToolCallUpdates = input.coalesceCumulativeToolCallUpdates ?? true;
+  const coalesceIncrementalContentDeltas = input.coalesceIncrementalContentDeltas ?? false;
+  const toolInterval = input.interval ?? DEFAULT_CUMULATIVE_TOOL_CALL_UPDATE_INTERVAL;
+  const contentDeltaInterval =
+    input.contentDeltaInterval ?? DEFAULT_INCREMENTAL_CONTENT_DELTA_INTERVAL;
+  let pending: BufferedRuntimeEvent | undefined;
+  let activeContentStream: ContentDeltaEvent | undefined;
   let timerFiber: Fiber.Fiber<void, never> | undefined;
   let closed = false;
 
@@ -87,8 +131,10 @@ export const makeCumulativeToolCallUpdateCoalescer = Effect.fn(
     }),
   );
 
-  const scheduleTimer = Effect.fn("CumulativeToolCallUpdateCoalescer.scheduleTimer")(function* () {
-    timerFiber = yield* Effect.sleep(interval).pipe(
+  const scheduleTimer = Effect.fn("CumulativeToolCallUpdateCoalescer.scheduleTimer")(function* (
+    duration: Duration.Input,
+  ) {
+    timerFiber = yield* Effect.sleep(duration).pipe(
       Effect.andThen(flushFromTimer),
       Effect.forkIn(input.scope),
     );
@@ -98,6 +144,7 @@ export const makeCumulativeToolCallUpdateCoalescer = Effect.fn(
     Effect.gen(function* () {
       yield* cancelTimer();
       yield* publishPending();
+      activeContentStream = undefined;
     }),
   );
 
@@ -108,8 +155,34 @@ export const makeCumulativeToolCallUpdateCoalescer = Effect.fn(
           return;
         }
 
-        if (isToolLifecyclePartial(event)) {
-          if (pending && canReplaceCumulativePartial(pending, event)) {
+        if (coalesceIncrementalContentDeltas && isIncrementalAssistantText(event)) {
+          if (activeContentStream && isSameContentStream(activeContentStream, event)) {
+            if (pending?.type === "content.delta" && isSameContentStream(pending, event)) {
+              pending = mergeIncrementalContent(pending, event);
+              return;
+            }
+            if (pending) {
+              yield* cancelTimer();
+              yield* publishPending();
+            }
+            pending = event;
+            yield* scheduleTimer(contentDeltaInterval);
+            return;
+          }
+
+          if (pending) {
+            yield* cancelTimer();
+            yield* publishPending();
+          }
+          activeContentStream = event;
+          yield* input.publish(event);
+          return;
+        }
+
+        activeContentStream = undefined;
+
+        if (coalesceCumulativeToolCallUpdates && isToolLifecyclePartial(event)) {
+          if (pending?.type === "item.updated" && canReplaceCumulativePartial(pending, event)) {
             pending = event;
             return;
           }
@@ -118,7 +191,7 @@ export const makeCumulativeToolCallUpdateCoalescer = Effect.fn(
             yield* publishPending();
           }
           pending = event;
-          yield* scheduleTimer();
+          yield* scheduleTimer(toolInterval);
           return;
         }
 
@@ -138,6 +211,7 @@ export const makeCumulativeToolCallUpdateCoalescer = Effect.fn(
       closed = true;
       yield* cancelTimer();
       pending = undefined;
+      activeContentStream = undefined;
     }),
   );
 

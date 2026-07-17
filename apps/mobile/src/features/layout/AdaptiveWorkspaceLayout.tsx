@@ -395,25 +395,27 @@ export function AdaptiveWorkspaceLayout(props: {
   );
 
   const handleOpenSettings = useCallback(() => {
-    navigation.navigate("SettingsSheet", { screen: "Settings" });
+    navigation.dispatch(StackActions.push("SettingsSheet", { screen: "Settings" }));
   }, [navigation]);
 
   // Minted here (root stack navigation) so the sidebar pane stays free of
   // navigation hooks — on iOS it renders inside an independent nav tree.
   const handleOpenEnvironmentSettings = useCallback(() => {
-    navigation.navigate("SettingsSheet", { screen: "SettingsEnvironments" });
+    navigation.dispatch(StackActions.push("SettingsSheet", { screen: "SettingsEnvironments" }));
   }, [navigation]);
 
   const handleNewThreadInProject = useCallback(
     (project: EnvironmentProject) => {
-      navigation.navigate("NewTaskSheet", {
-        screen: "NewTaskDraft",
-        params: {
-          environmentId: String(project.environmentId),
-          projectId: String(project.id),
-          title: project.title,
-        },
-      });
+      navigation.dispatch(
+        StackActions.push("NewTaskSheet", {
+          screen: "NewTaskDraft",
+          params: {
+            environmentId: String(project.environmentId),
+            projectId: String(project.id),
+            title: project.title,
+          },
+        }),
+      );
     },
     [navigation],
   );

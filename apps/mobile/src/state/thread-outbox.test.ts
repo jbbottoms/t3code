@@ -18,6 +18,7 @@ import {
   resolveThreadOutboxDeliveryAction,
   resolveThreadOutboxFailureAction,
   resolveQueuedThreadSettings,
+  selectNextThreadOutboxMessage,
   shouldRetryThreadOutboxDelivery,
   threadOutboxRetryDelayMs,
   type QueuedThreadMessage,
@@ -69,7 +70,7 @@ describe("thread outbox", () => {
         schemaVersion: 1,
         ...message,
       }),
-    ).toEqual(message);
+    ).toEqual({ ...message, deliveryMode: "queue" });
     expect(() =>
       decodeQueuedThreadMessage({
         schemaVersion: 1,
@@ -94,9 +95,10 @@ describe("thread outbox", () => {
       interactionMode: "plan",
     } satisfies QueuedThreadMessage;
 
-    expect(decodeQueuedThreadMessage(encodeQueuedThreadMessage(selectedMessage))).toEqual(
-      selectedMessage,
-    );
+    expect(decodeQueuedThreadMessage(encodeQueuedThreadMessage(selectedMessage))).toEqual({
+      ...selectedMessage,
+      deliveryMode: "queue",
+    });
     expect(
       resolveQueuedThreadSettings(legacyMessage, {
         modelSelection: selectedMessage.modelSelection,
@@ -357,6 +359,45 @@ describe("thread outbox", () => {
     ).toBe("send");
   });
 
+  it("bypasses queued follow-ups only for an explicit steer while a turn is running", () => {
+    const queued = queuedMessage({
+      messageId: "queued",
+      createdAt: "2026-06-08T10:00:01.000Z",
+    });
+    const steer = {
+      ...queuedMessage({
+        messageId: "steer",
+        createdAt: "2026-06-08T10:00:02.000Z",
+      }),
+      deliveryMode: "steer",
+    } satisfies QueuedThreadMessage;
+
+    expect(selectNextThreadOutboxMessage([queued, steer], "running")).toBe(steer);
+    expect(selectNextThreadOutboxMessage([queued, steer], "starting")).toBe(queued);
+    expect(selectNextThreadOutboxMessage([queued, steer], "idle")).toBe(queued);
+    expect(selectNextThreadOutboxMessage([queued], "running")).toBeUndefined();
+  });
+
+  it("sends a steer during a running turn, waits through startup, and preserves queue behavior", () => {
+    const base = {
+      isCreation: false,
+      threadExists: true,
+      shellStatus: "live" as const,
+      environmentConnected: true,
+      threadBusy: true,
+    };
+
+    expect(resolveThreadOutboxDeliveryAction({ ...base, deliveryMode: "queue" })).toBe("wait");
+    expect(resolveThreadOutboxDeliveryAction({ ...base, deliveryMode: "steer" })).toBe("send");
+    expect(
+      resolveThreadOutboxDeliveryAction({
+        ...base,
+        deliveryMode: "steer",
+        threadStarting: true,
+      }),
+    ).toBe("wait");
+  });
+
   it("sends queued creations once connected and live, removing already-created ones", () => {
     expect(
       resolveThreadOutboxDeliveryAction({
@@ -418,9 +459,10 @@ describe("thread outbox", () => {
       },
     } satisfies QueuedThreadMessage;
 
-    expect(decodeQueuedThreadMessage(encodeQueuedThreadMessage(creationMessage))).toEqual(
-      creationMessage,
-    );
+    expect(decodeQueuedThreadMessage(encodeQueuedThreadMessage(creationMessage))).toEqual({
+      ...creationMessage,
+      deliveryMode: "queue",
+    });
     expect(isQueuedThreadCreationSendable(creationMessage)).toBe(true);
     expect(
       isQueuedThreadCreationSendable({

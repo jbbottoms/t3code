@@ -86,19 +86,65 @@ function terminal(input: {
   };
 }
 
-const makeHarness = Effect.fn("makeCumulativeToolCallUpdateCoalescerTestHarness")(function* () {
-  const scope = yield* Scope.Scope;
-  const published: Array<ProviderRuntimeEvent> = [];
-  const coalescer = yield* makeCumulativeToolCallUpdateCoalescer({
-    scope,
-    interval: "100 millis",
-    publish: (event) =>
-      Effect.sync(() => {
-        published.push(event);
-      }),
-  });
-  return { coalescer, published };
-});
+function content(
+  delta: string,
+  input?: {
+    readonly itemId?: string;
+    readonly threadId?: string;
+    readonly turnId?: string;
+  },
+): ProviderRuntimeEvent {
+  return {
+    type: "content.delta",
+    ...eventStamp(),
+    provider: ProviderDriverKind.make("kimi"),
+    threadId: ThreadId.make(input?.threadId ?? "thread-1"),
+    turnId: TurnId.make(input?.turnId ?? "turn-1"),
+    itemId: RuntimeItemId.make(input?.itemId ?? "assistant-1"),
+    payload: {
+      streamKind: "assistant_text",
+      delta,
+    },
+    raw: {
+      source: "acp.jsonrpc",
+      method: "session/update",
+      payload: { delta },
+    },
+  };
+}
+
+function assistantTerminal(): ProviderRuntimeEvent {
+  return {
+    type: "item.completed",
+    ...eventStamp(),
+    provider: ProviderDriverKind.make("kimi"),
+    threadId: ThreadId.make("thread-1"),
+    turnId: TurnId.make("turn-1"),
+    itemId: RuntimeItemId.make("assistant-1"),
+    payload: {
+      itemType: "assistant_message",
+      status: "completed",
+    },
+  };
+}
+
+const makeHarness = Effect.fn("makeCumulativeToolCallUpdateCoalescerTestHarness")(
+  function* (input?: { readonly coalesceContent?: boolean }) {
+    const scope = yield* Scope.Scope;
+    const published: Array<ProviderRuntimeEvent> = [];
+    const coalescer = yield* makeCumulativeToolCallUpdateCoalescer({
+      scope,
+      interval: "100 millis",
+      coalesceIncrementalContentDeltas: input?.coalesceContent ?? false,
+      contentDeltaInterval: "32 millis",
+      publish: (event) =>
+        Effect.sync(() => {
+          published.push(event);
+        }),
+    });
+    return { coalescer, published };
+  },
+);
 
 it.effect("bounds canonical writes while retaining the newest cumulative partial", () =>
   Effect.gen(function* () {
@@ -291,6 +337,57 @@ it.effect("passes non-tool and terminal-shaped item updates through without buff
     yield* coalescer.offer(terminalUpdate);
 
     expect(published).toEqual([nonToolUpdate, terminalUpdate]);
+  }).pipe(Effect.scoped, Effect.provide(TestClock.layer())),
+);
+
+it.effect("publishes first text immediately and batches follow-on deltas until a boundary", () =>
+  Effect.gen(function* () {
+    const { coalescer, published } = yield* makeHarness({ coalesceContent: true });
+    const first = content("Hel");
+    const second = content("lo");
+    const third = content(" world");
+    const completed = assistantTerminal();
+
+    yield* coalescer.offer(first);
+    expect(published).toEqual([first]);
+
+    yield* coalescer.offer(second);
+    yield* coalescer.offer(third);
+    yield* TestClock.adjust("31 millis");
+    yield* Effect.yieldNow;
+    expect(published).toEqual([first]);
+
+    yield* coalescer.offer(completed);
+    expect(published).toHaveLength(3);
+    expect(published[0]).toEqual(first);
+    expect(published[1]?.type).toBe("content.delta");
+    if (published[1]?.type === "content.delta") {
+      expect(published[1].payload.delta).toBe("lo world");
+      expect(published[1].eventId).toBe(third.eventId);
+      expect(published[1].raw).toEqual(third.raw);
+    }
+    expect(published[2]).toEqual(completed);
+
+    yield* TestClock.adjust("1 second");
+    yield* Effect.yieldNow;
+    expect(published).toHaveLength(3);
+  }).pipe(Effect.scoped, Effect.provide(TestClock.layer())),
+);
+
+it.effect("flush publishes pending text exactly and resets first-delta behavior", () =>
+  Effect.gen(function* () {
+    const { coalescer, published } = yield* makeHarness({ coalesceContent: true });
+    const first = content("a");
+    const second = content("b");
+    const afterFlush = content("c");
+
+    yield* coalescer.offer(first);
+    yield* coalescer.offer(second);
+    yield* coalescer.flush;
+    expect(published).toEqual([first, second]);
+
+    yield* coalescer.offer(afterFlush);
+    expect(published).toEqual([first, second, afterFlush]);
   }).pipe(Effect.scoped, Effect.provide(TestClock.layer())),
 );
 

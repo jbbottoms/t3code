@@ -151,28 +151,32 @@ export const makeEnvironmentShellState = Effect.fn("EnvironmentShellState.make")
 
   yield* Effect.forkScoped(
     Effect.gen(function* () {
-      // Establish the base shell snapshot to resume from, minimizing bytes over
-      // the wire:
-      // - Warm cache: reuse the cached snapshot (zero network) and resume via
-      //   `afterSequence` so we only receive shell events since the cached
-      //   sequence.
-      // - Cold cache: load the full shell snapshot over HTTP (gzip-compressible,
-      //   and off the socket), then resume via `afterSequence`.
-      // If no base can be established we fall back to the socket-embedded
-      // snapshot so the shell still synchronizes. Overlapping/replayed events are
-      // deduped by sequence in applyItem.
-      const base = Option.isSome(cachedSnapshot)
-        ? cachedSnapshot
-        : yield* Effect.gen(function* () {
-            const prepared = yield* SubscriptionRef.changes(supervisor.prepared).pipe(
-              Stream.filter(Option.isSome),
-              Stream.map((current) => current.value),
-              Stream.runHead,
-            );
-            return Option.isSome(prepared)
-              ? yield* snapshotLoader.load(prepared.value)
-              : Option.none<OrchestrationShellSnapshot>();
-          });
+      // Render a warm cache immediately, but refresh it over HTTP before choosing
+      // the stream resume sequence. A cached shell can be thousands of events
+      // behind after a long-running agent session; replaying every intervening
+      // event is both slower than one gzip-compressible snapshot and can leave a
+      // mobile chat list stale for minutes. If the refresh fails, the cached
+      // snapshot remains a safe fallback. The socket still embeds a snapshot when
+      // neither source is available.
+      const prepared = yield* SubscriptionRef.changes(supervisor.prepared).pipe(
+        Stream.filter(Option.isSome),
+        Stream.map((current) => current.value),
+        Stream.runHead,
+      );
+      const refreshedSnapshot = Option.isSome(prepared)
+        ? yield* snapshotLoader.load(prepared.value)
+        : Option.none<OrchestrationShellSnapshot>();
+      const base = Option.match(refreshedSnapshot, {
+        onNone: () => cachedSnapshot,
+        onSome: (refreshed) =>
+          Option.match(cachedSnapshot, {
+            onNone: () => refreshedSnapshot,
+            onSome: (cached) =>
+              refreshed.snapshotSequence >= cached.snapshotSequence
+                ? refreshedSnapshot
+                : cachedSnapshot,
+          }),
+      });
 
       if (Option.isSome(base)) {
         yield* applyItem({ kind: "snapshot", snapshot: base.value });

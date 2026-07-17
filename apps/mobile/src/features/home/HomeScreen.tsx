@@ -37,6 +37,7 @@ import {
   buildHomeListLayout,
   DEFAULT_GROUP_DISPLAY_STATE,
   homeListItemsAreEqual,
+  mergePersistedCollapsedGroupStates,
   nextGroupDisplayState,
   type HomeGroupDisplayAction,
   type HomeGroupDisplayState,
@@ -169,18 +170,13 @@ export function HomeScreen(props: HomeScreenProps) {
   const accentColor = useThemeColor("--color-icon-muted");
 
   const effectiveGroupDisplayStates = useMemo(() => {
-    const next = new Map(groupDisplayStates);
     if (!AsyncResult.isSuccess(preferencesResult)) {
-      return next;
+      return groupDisplayStates;
     }
-    for (const key of preferencesResult.value.collapsedProjectGroups ?? []) {
-      const existing = next.get(key);
-      next.set(key, {
-        ...(existing ?? DEFAULT_GROUP_DISPLAY_STATE),
-        collapsed: true,
-      });
-    }
-    return next;
+    return mergePersistedCollapsedGroupStates(
+      groupDisplayStates,
+      preferencesResult.value.collapsedProjectGroups ?? [],
+    );
   }, [groupDisplayStates, preferencesResult]);
   const effectiveGroupDisplayStatesRef = useRef(effectiveGroupDisplayStates);
   effectiveGroupDisplayStatesRef.current = effectiveGroupDisplayStates;

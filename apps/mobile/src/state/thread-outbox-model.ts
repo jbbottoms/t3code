@@ -21,7 +21,10 @@ import { DraftComposerImageAttachmentSchema } from "../lib/composer-image-schema
 import type { DraftComposerImageAttachment } from "../lib/composerImages";
 import { scopedThreadKey } from "../lib/scopedEntities";
 
-const THREAD_OUTBOX_SCHEMA_VERSION = 3;
+const THREAD_OUTBOX_SCHEMA_VERSION = 4;
+
+export type ThreadOutboxDeliveryMode = "queue" | "steer";
+export type ThreadOutboxThreadStatus = "idle" | "starting" | "running";
 const THREAD_OUTBOX_MAX_RETRY_DELAY_MS = 16_000;
 
 const QueuedThreadCreationSchema = Schema.Struct({
@@ -37,7 +40,7 @@ const QueuedThreadCreationSchema = Schema.Struct({
 });
 
 export const QueuedThreadMessageSchema = Schema.Struct({
-  schemaVersion: Schema.Literals([1, 2, THREAD_OUTBOX_SCHEMA_VERSION]),
+  schemaVersion: Schema.Literals([1, 2, 3, THREAD_OUTBOX_SCHEMA_VERSION]),
   environmentId: EnvironmentId,
   threadId: ThreadId,
   messageId: MessageId,
@@ -47,6 +50,7 @@ export const QueuedThreadMessageSchema = Schema.Struct({
   modelSelection: Schema.optional(ModelSelection),
   runtimeMode: Schema.optional(RuntimeMode),
   interactionMode: Schema.optional(ProviderInteractionMode),
+  deliveryMode: Schema.optional(Schema.Literals(["queue", "steer"])),
   // Present when the queued item creates a brand-new thread (pending task)
   // instead of appending a turn to an existing one.
   creation: Schema.optional(QueuedThreadCreationSchema),
@@ -76,6 +80,8 @@ export interface QueuedThreadMessage {
   readonly modelSelection?: ModelSelectionType;
   readonly runtimeMode?: RuntimeModeType;
   readonly interactionMode?: ProviderInteractionModeType;
+  /** Missing only on records written before schema v4; those decode as queue. */
+  readonly deliveryMode?: ThreadOutboxDeliveryMode;
   readonly creation?: QueuedThreadCreation;
   readonly createdAt: string;
 }
@@ -109,12 +115,16 @@ export function encodeQueuedThreadMessage(message: QueuedThreadMessage): unknown
   return encodeStoredQueuedThreadMessage({
     schemaVersion: THREAD_OUTBOX_SCHEMA_VERSION,
     ...message,
+    deliveryMode: message.deliveryMode ?? "queue",
   });
 }
 
 export function decodeQueuedThreadMessage(value: unknown): QueuedThreadMessage {
   const { schemaVersion: _, ...message } = decodeStoredQueuedThreadMessage(value);
-  return message;
+  return {
+    ...message,
+    deliveryMode: message.deliveryMode ?? "queue",
+  };
 }
 
 export function groupQueuedThreadMessages(
@@ -148,12 +158,29 @@ export function threadOutboxRetryDelayMs(attempt: number): number {
 
 export type ThreadOutboxDeliveryAction = "wait" | "remove" | "send";
 
+/**
+ * While a turn is running, an explicit steer bypasses older queued follow-ups.
+ * Once the thread is idle, normal FIFO order resumes; a steer that missed the
+ * active turn is delivered as the next ordinary turn instead of getting stuck.
+ */
+export function selectNextThreadOutboxMessage(
+  messages: ReadonlyArray<QueuedThreadMessage>,
+  threadStatus: ThreadOutboxThreadStatus,
+): QueuedThreadMessage | undefined {
+  if (threadStatus !== "running") {
+    return messages[0];
+  }
+  return messages.find((message) => message.deliveryMode === "steer");
+}
+
 export function resolveThreadOutboxDeliveryAction(input: {
   readonly isCreation: boolean;
   readonly threadExists: boolean;
   readonly shellStatus: EnvironmentShellStatus;
   readonly environmentConnected: boolean;
   readonly threadBusy: boolean;
+  readonly threadStarting?: boolean;
+  readonly deliveryMode?: ThreadOutboxDeliveryMode;
 }): ThreadOutboxDeliveryAction {
   if (input.isCreation) {
     // A pending task creates its thread on delivery. If the thread already
@@ -168,6 +195,9 @@ export function resolveThreadOutboxDeliveryAction(input: {
   }
   if (!input.threadExists) {
     return input.shellStatus === "live" ? "remove" : "wait";
+  }
+  if ((input.deliveryMode ?? "queue") === "steer") {
+    return input.environmentConnected && !input.threadStarting ? "send" : "wait";
   }
   return input.environmentConnected && !input.threadBusy ? "send" : "wait";
 }

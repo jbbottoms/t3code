@@ -1,5 +1,6 @@
 export const MOBILE_THEME_IDS = [
   "system",
+  "orion",
   "dracula",
   "solarized-dark",
   "solarized-light",
@@ -94,6 +95,29 @@ const SYSTEM_DARK: MobileThemePalette = {
 };
 
 const CUSTOM_THEME_PALETTES = {
+  orion: {
+    background: "#111315",
+    surface: "#191d20",
+    surfaceAlt: "#22282d",
+    foreground: "#f3f0e9",
+    foregroundSecondary: "#c9c3b8",
+    muted: "#9a958c",
+    tertiary: "#5f666c",
+    accent: "#ff7a18",
+    accentForeground: "#111315",
+    primary: "#ff7a18",
+    primaryForeground: "#111315",
+    link: "#6fb8ff",
+    bubble: "#c95f12",
+    black: "#0b0d0f",
+    red: "#ff625f",
+    green: "#74c991",
+    yellow: "#ffd166",
+    blue: "#6fb8ff",
+    magenta: "#d58cff",
+    cyan: "#63d5d1",
+    white: "#f3f0e9",
+  },
   dracula: {
     background: "#282a36",
     surface: "#343746",
@@ -249,6 +273,7 @@ const CUSTOM_THEME_PALETTES = {
 } as const satisfies Record<Exclude<MobileThemeId, "system">, MobileThemePalette>;
 
 const CUSTOM_THEME_SCHEMES = {
+  orion: "dark",
   dracula: "dark",
   "solarized-dark": "dark",
   "solarized-light": "light",
@@ -266,6 +291,13 @@ export const MOBILE_THEME_OPTIONS: readonly MobileThemeOption[] = [
     description: "Follows iPhone",
     scheme: "system",
     swatches: ["#0a0a0a", "#f2f2f7", "#0a84ff", "#34c759"],
+  },
+  {
+    id: "orion",
+    label: "Orion",
+    description: "Graphite + workbench orange",
+    scheme: "dark",
+    swatches: ["#111315", "#ff7a18", "#6f7a84", "#ffd166"],
   },
   {
     id: "dracula",

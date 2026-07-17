@@ -12,10 +12,11 @@ import {
 
 describe("mobileThemes", () => {
   it("ships the requested popular theme catalog", () => {
-    expect(MOBILE_THEME_IDS).toHaveLength(9);
+    expect(MOBILE_THEME_IDS).toHaveLength(10);
     expect(new Set(MOBILE_THEME_IDS).size).toBe(MOBILE_THEME_IDS.length);
     expect(MOBILE_THEME_IDS).toEqual(
       expect.arrayContaining([
+        "orion",
         "dracula",
         "solarized-dark",
         "solarized-light",
@@ -61,5 +62,13 @@ describe("mobileThemes", () => {
     expect(terminal.background).toBe(dracula.background);
     expect(terminal.cursorForeground).toBe(dracula.accent);
     expect(terminal.palette).toHaveLength(16);
+  });
+
+  it("gives Orion an authored graphite and orange palette", () => {
+    const orion = resolveMobileThemePalette("orion", "light");
+
+    expect(orion.background).toBe("#111315");
+    expect(orion.accent).toBe("#ff7a18");
+    expect(resolveMobileThemeScheme("orion", "light")).toBe("dark");
   });
 });

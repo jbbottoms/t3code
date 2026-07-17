@@ -60,6 +60,32 @@ function useDeviceRegistered(): boolean {
 
 export function SettingsRouteScreen() {
   const navigation = useNavigation();
+  const closeSettings = useCallback(() => {
+    const parentNavigation = navigation.getParent();
+    if (parentNavigation?.canGoBack()) {
+      parentNavigation.goBack();
+      return;
+    }
+    navigation.goBack();
+  }, [navigation]);
+  const headerOptions = useMemo(
+    () => ({
+      unstable_headerRightItems:
+        Platform.OS === "ios"
+          ? () => [
+              withNativeGlassHeaderItem({
+                accessibilityLabel: "Close settings",
+                icon: { name: "xmark", type: "sfSymbol" } as const,
+                identifier: "settings-close",
+                label: "",
+                onPress: closeSettings,
+                type: "button" as const,
+              }),
+            ]
+          : undefined,
+    }),
+    [closeSettings],
+  );
 
   return (
     <>
@@ -68,26 +94,10 @@ export function SettingsRouteScreen() {
         <>
           {/* Android renders its own in-screen header instead of the native bar. */}
           <NativeStackScreenOptions options={{ headerShown: false }} />
-          <AndroidScreenHeader title="Settings" onBack={() => navigation.goBack()} />
+          <AndroidScreenHeader title="Settings" onBack={closeSettings} />
         </>
       ) : (
-        <NativeStackScreenOptions
-          options={{
-            unstable_headerRightItems:
-              Platform.OS === "ios"
-                ? () => [
-                    withNativeGlassHeaderItem({
-                      accessibilityLabel: "Close settings",
-                      icon: { name: "xmark", type: "sfSymbol" } as const,
-                      identifier: "settings-close",
-                      label: "",
-                      onPress: () => navigation.goBack(),
-                      type: "button",
-                    }),
-                  ]
-                : undefined,
-          }}
-        />
+        <NativeStackScreenOptions options={headerOptions} />
       )}
       {hasCloudPublicConfig() ? <ConfiguredSettingsRouteScreen /> : <LocalSettingsRouteScreen />}
     </>

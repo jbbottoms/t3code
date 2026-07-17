@@ -106,6 +106,8 @@ interface ThreadRouteScreenProps extends ThreadRouteScreenRouteProps {
 }
 
 function ThreadUnavailableScreen() {
+  const navigation = useNavigation();
+
   return (
     <ScrollView
       contentInsetAdjustmentBehavior="automatic"
@@ -120,6 +122,8 @@ function ThreadUnavailableScreen() {
       <EmptyState
         title="Thread unavailable"
         detail="This thread is not available in the current mobile snapshot."
+        actionLabel="Return to Threads"
+        onAction={() => navigation.dispatch(StackActions.replace("Home"))}
       />
     </ScrollView>
   );

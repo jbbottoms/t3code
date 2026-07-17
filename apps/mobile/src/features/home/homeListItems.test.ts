@@ -10,6 +10,7 @@ import {
   DEFAULT_GROUP_DISPLAY_STATE,
   HOME_INITIAL_VISIBLE_THREADS,
   HOME_SHOW_MORE_STEP,
+  mergePersistedCollapsedGroupStates,
   nextGroupDisplayState,
   type HomeGroupDisplayState,
   type HomeListItem,
@@ -236,5 +237,18 @@ describe("buildHomeListLayout", () => {
     // header + 6 threads + show-more = 8 items, so beta's header is index 8.
     expect(layout.stickyHeaderIndices).toEqual([0, 8]);
     expect(layout.items[8]).toMatchObject({ type: "header", isFirst: false });
+  });
+});
+
+describe("mergePersistedCollapsedGroupStates", () => {
+  it("hydrates untouched groups but preserves a local expansion tap", () => {
+    const locallyExpanded = new Map<string, HomeGroupDisplayState>([
+      ["alpha", { ...DEFAULT_GROUP_DISPLAY_STATE, collapsed: false }],
+    ]);
+
+    const merged = mergePersistedCollapsedGroupStates(locallyExpanded, ["alpha", "beta"]);
+
+    expect(merged.get("alpha")?.collapsed).toBe(false);
+    expect(merged.get("beta")?.collapsed).toBe(true);
   });
 });

@@ -18,7 +18,11 @@ import { formatElapsed } from "@t3tools/shared/orchestrationTiming";
 import * as Haptics from "expo-haptics";
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { Platform, View, type GestureResponderEvent } from "react-native";
-import { KeyboardController, KeyboardStickyView } from "react-native-keyboard-controller";
+import {
+  KeyboardController,
+  KeyboardEvents,
+  KeyboardStickyView,
+} from "react-native-keyboard-controller";
 import Animated, { FadeInDown, FadeOut, LinearTransition } from "react-native-reanimated";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
@@ -26,6 +30,7 @@ import { AppText as Text } from "../../components/AppText";
 import type { ComposerEditorHandle } from "../../components/ComposerEditor";
 import type { StatusTone } from "../../components/StatusPill";
 import type { DraftComposerImageAttachment } from "../../lib/composerImages";
+import type { ThreadOutboxDeliveryMode } from "../../state/thread-outbox-model";
 import { CHAT_CONTENT_MAX_WIDTH, type LayoutVariant } from "../../lib/layout";
 import { scopedThreadKey } from "../../lib/scopedEntities";
 import type {
@@ -78,7 +83,7 @@ export interface ThreadDetailScreenProps {
   readonly onNativePasteImages: (uris: ReadonlyArray<string>) => Promise<void>;
   readonly onRemoveDraftImage: (imageId: string) => void;
   readonly onStopThread: () => void;
-  readonly onSendMessage: () => Promise<MessageId | null>;
+  readonly onSendMessage: (deliveryMode?: ThreadOutboxDeliveryMode) => Promise<MessageId | null>;
   readonly onReconnectEnvironment: () => void;
   readonly onUpdateThreadModelSelection: (modelSelection: ModelSelection) => void;
   readonly onUpdateThreadRuntimeMode: (runtimeMode: RuntimeMode) => void;
@@ -264,6 +269,9 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
     -nativeInsetOvercount,
   );
   const { freeze, scrollMessageToEnd } = useKeyboardScrollToEnd({ listRef });
+  const composerFocusGenerationRef = useRef(0);
+  const composerFocusScrollChainRef = useRef<Promise<void>>(Promise.resolve());
+  const composerFocusWaitingForKeyboardRef = useRef(false);
   const showContent = props.showContent ?? true;
   const layoutVariant = props.layoutVariant ?? "compact";
   const isSplitLayout = layoutVariant === "split";
@@ -286,6 +294,61 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
     lastScrolledAnchorMessageIdRef.current = null;
     freeze.set(false);
   }, [freeze, selectedThreadKey]);
+
+  const scheduleComposerFocusScroll = useCallback(
+    (animated: boolean) => {
+      const generation = composerFocusGenerationRef.current;
+      const targetThreadKey = selectedThreadKey;
+      requestAnimationFrame(() => {
+        composerFocusScrollChainRef.current = composerFocusScrollChainRef.current
+          .catch(() => undefined)
+          .then(async () => {
+            if (
+              composerFocusGenerationRef.current !== generation ||
+              selectedThreadKeyRef.current !== targetThreadKey
+            ) {
+              return;
+            }
+            try {
+              await scrollMessageToEnd({ animated, closeKeyboard: false });
+            } catch {
+              // Navigation can invalidate the native list between the frame
+              // and the scroll. A later focus will establish a fresh anchor.
+            } finally {
+              // The library helper freezes inset tracking before awaiting the
+              // list. Always thaw it if navigation or an interrupted scroll
+              // causes that promise to reject.
+              freeze.set(false);
+            }
+          });
+      });
+    },
+    [freeze, scrollMessageToEnd, selectedThreadKey],
+  );
+
+  const handleComposerFocus = useCallback(() => {
+    composerFocusGenerationRef.current += 1;
+    composerFocusWaitingForKeyboardRef.current = true;
+    // First anchor after the composer expands. keyboardDidShow below repeats
+    // the anchor against the keyboard's final measured inset.
+    scheduleComposerFocusScroll(true);
+  }, [scheduleComposerFocusScroll]);
+
+  const handleComposerBlur = useCallback(() => {
+    composerFocusGenerationRef.current += 1;
+    composerFocusWaitingForKeyboardRef.current = false;
+  }, []);
+
+  useEffect(() => {
+    const keyboardDidShow = KeyboardEvents.addListener("keyboardDidShow", () => {
+      if (!composerFocusWaitingForKeyboardRef.current) {
+        return;
+      }
+      composerFocusWaitingForKeyboardRef.current = false;
+      scheduleComposerFocusScroll(false);
+    });
+    return () => keyboardDidShow.remove();
+  }, [scheduleComposerFocusScroll]);
 
   useEffect(() => {
     if (
@@ -339,17 +402,20 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
     selectedThreadKey,
   ]);
 
-  const handleSendMessage = useCallback(async () => {
-    const targetThreadKey = selectedThreadKey;
-    const messageId = await props.onSendMessage();
-    if (messageId === null || selectedThreadKeyRef.current !== targetThreadKey) {
-      return messageId;
-    }
+  const handleSendMessage = useCallback(
+    async (deliveryMode?: ThreadOutboxDeliveryMode) => {
+      const targetThreadKey = selectedThreadKey;
+      const messageId = await props.onSendMessage(deliveryMode);
+      if (messageId === null || selectedThreadKeyRef.current !== targetThreadKey) {
+        return messageId;
+      }
 
-    setAnchorMessageId(messageId);
-    composerEditorRef.current?.blur();
-    return messageId;
-  }, [props.onSendMessage, selectedThreadKey]);
+      setAnchorMessageId(messageId);
+      composerEditorRef.current?.blur();
+      return messageId;
+    },
+    [props.onSendMessage, selectedThreadKey],
+  );
 
   const collapseComposer = useCallback(() => {
     composerEditorRef.current?.blur();
@@ -496,6 +562,8 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
               onUpdateRuntimeMode={props.onUpdateThreadRuntimeMode}
               onUpdateInteractionMode={props.onUpdateThreadInteractionMode}
               onExpandedChange={setComposerExpanded}
+              onFocus={handleComposerFocus}
+              onBlur={handleComposerBlur}
             />
           </View>
         </KeyboardStickyView>

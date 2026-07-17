@@ -17,7 +17,9 @@ import {
 import type { ReactNode } from "react";
 import { memo, useCallback, useEffect, useMemo, useRef, useState, type RefObject } from "react";
 import {
+  ActionSheetIOS,
   ActivityIndicator,
+  Alert,
   Image,
   Platform,
   Pressable,
@@ -62,6 +64,7 @@ import {
   resolveProviderOptionDescriptors,
 } from "../../lib/providerOptions";
 import { useComposerPathSearch } from "../../state/use-composer-path-search";
+import type { ThreadOutboxDeliveryMode } from "../../state/thread-outbox-model";
 import { ComposerCommandPopover, type ComposerCommandItem } from "./ComposerCommandPopover";
 
 /**
@@ -103,12 +106,14 @@ export interface ThreadComposerProps {
   readonly onNativePasteImages: (uris: ReadonlyArray<string>) => Promise<void>;
   readonly onRemoveDraftImage: (imageId: string) => void;
   readonly onStopThread: () => void;
-  readonly onSendMessage: () => Promise<MessageId | null>;
+  readonly onSendMessage: (deliveryMode?: ThreadOutboxDeliveryMode) => Promise<MessageId | null>;
   readonly onUpdateModelSelection: (modelSelection: ModelSelection) => void;
   readonly onUpdateRuntimeMode: (runtimeMode: RuntimeMode) => void;
   readonly onUpdateInteractionMode: (interactionMode: ProviderInteractionMode) => void;
   readonly onReconnectEnvironment: () => void;
   readonly onExpandedChange?: (expanded: boolean) => void;
+  readonly onFocus?: () => void;
+  readonly onBlur?: () => void;
 }
 
 /**
@@ -288,18 +293,20 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
   const handleFocus = useCallback(() => {
     setIsFocused(true);
     onExpandedChange?.(true);
-  }, [onExpandedChange]);
+    props.onFocus?.();
+  }, [onExpandedChange, props.onFocus]);
 
   const handleBlur = useCallback(() => {
     setIsFocused(false);
     onExpandedChange?.(false);
-  }, [onExpandedChange]);
+    props.onBlur?.();
+  }, [onExpandedChange, props.onBlur]);
   const showStopAction =
     props.selectedThread.session?.status === "running" ||
     props.selectedThread.session?.status === "starting";
 
   const sendLabel =
-    props.connectionState !== "connected" || props.activeThreadBusy || props.queueCount > 0
+    props.connectionState !== "connected" || (!props.activeThreadBusy && props.queueCount > 0)
       ? "Queue"
       : "Send";
   const currentModelSelection = props.selectedThread.modelSelection;
@@ -503,28 +510,67 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
   // ── Handle command selection ──────────────────────────────
   const { onChangeDraftMessage, onUpdateInteractionMode, draftMessage, onSendMessage } = props;
 
-  const handleSend = useCallback(async () => {
-    const threadKey = scopedThreadKey(props.environmentId, props.selectedThread.id);
-    if (inFlightThreadIdsRef.current.has(threadKey)) return;
-    inFlightThreadIdsRef.current.add(threadKey);
-    // Sending a prompt starts agent work: arm the lock-screen card now, while
-    // the app is foregrounded and the activity token can be registered.
-    armAgentAwarenessLiveActivityForLocalWork({
-      threadTitle: props.selectedThread.title,
-      projectTitle: props.environmentLabel ?? "T3 Code",
-    });
-    try {
-      await onSendMessage();
-    } finally {
-      inFlightThreadIdsRef.current.delete(threadKey);
+  const submitMessage = useCallback(
+    async (deliveryMode: ThreadOutboxDeliveryMode) => {
+      const threadKey = scopedThreadKey(props.environmentId, props.selectedThread.id);
+      if (inFlightThreadIdsRef.current.has(threadKey)) return;
+      inFlightThreadIdsRef.current.add(threadKey);
+      // Sending a prompt starts agent work: arm the lock-screen card now, while
+      // the app is foregrounded and the activity token can be registered.
+      armAgentAwarenessLiveActivityForLocalWork({
+        threadTitle: props.selectedThread.title,
+        projectTitle: props.environmentLabel ?? "T3 Code",
+      });
+      try {
+        await onSendMessage(deliveryMode);
+      } finally {
+        inFlightThreadIdsRef.current.delete(threadKey);
+      }
+    },
+    [
+      onSendMessage,
+      props.environmentId,
+      props.environmentLabel,
+      props.selectedThread.id,
+      props.selectedThread.title,
+    ],
+  );
+
+  const handleSend = useCallback(() => {
+    if (!props.activeThreadBusy || props.connectionState !== "connected") {
+      void submitMessage("queue");
+      return;
     }
-  }, [
-    onSendMessage,
-    props.environmentId,
-    props.environmentLabel,
-    props.selectedThread.id,
-    props.selectedThread.title,
-  ]);
+
+    const chooseDelivery = (deliveryMode: ThreadOutboxDeliveryMode) => {
+      void submitMessage(deliveryMode);
+    };
+    if (Platform.OS === "ios") {
+      ActionSheetIOS.showActionSheetWithOptions(
+        {
+          title: "Send while the agent is working",
+          message: "Queue waits for the current turn. Steer injects this into the active turn.",
+          options: ["Queue after current turn", "Steer current turn", "Cancel"],
+          cancelButtonIndex: 2,
+        },
+        (buttonIndex) => {
+          if (buttonIndex === 0) chooseDelivery("queue");
+          if (buttonIndex === 1) chooseDelivery("steer");
+        },
+      );
+      return;
+    }
+
+    Alert.alert(
+      "Send while the agent is working",
+      "Queue waits for the current turn. Steer injects this into the active turn.",
+      [
+        { text: "Cancel", style: "cancel" },
+        { text: "Queue", onPress: () => chooseDelivery("queue") },
+        { text: "Steer", onPress: () => chooseDelivery("steer") },
+      ],
+    );
+  }, [props.activeThreadBusy, props.connectionState, submitMessage]);
   const handleCommandSelect = useCallback(
     (item: ComposerCommandItem) => {
       if (!composerTrigger) return;

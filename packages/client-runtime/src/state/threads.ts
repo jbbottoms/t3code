@@ -200,30 +200,30 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
   yield* setSynchronizing;
   yield* Effect.forkScoped(
     Effect.gen(function* () {
-      // Establish the base snapshot to resume from, minimizing bytes over the
-      // wire:
-      // - Warm cache: reuse the cached snapshot (zero network) and resume via
-      //   `afterSequence` so we only receive events since the cached sequence.
-      // - Cold cache: load the full snapshot over HTTP (gzip-compressible, and
-      //   off the socket), then resume via `afterSequence`.
-      // If no base can be established we fall back to the socket-embedded
-      // snapshot so the thread still synchronizes. Overlapping/replayed events
-      // are deduped by sequence in applyItem.
-      const base = Option.isSome(cached)
-        ? cached
-        : yield* Effect.gen(function* () {
-            // Cold cache only: wait for a prepared connection so we can
-            // authenticate the HTTP request; this mirrors the socket path, which
-            // likewise waits for a live session.
-            const prepared = yield* SubscriptionRef.changes(supervisor.prepared).pipe(
-              Stream.filter(Option.isSome),
-              Stream.map((current) => current.value),
-              Stream.runHead,
-            );
-            return Option.isSome(prepared)
-              ? yield* snapshotLoader.load(prepared.value, threadId)
-              : Option.none<OrchestrationThreadDetailSnapshot>();
-          });
+      // Render a warm cache immediately, but refresh it over HTTP before
+      // choosing the stream resume sequence. Long-running agent turns can leave
+      // a cached thread thousands of events behind; replaying each delta forces
+      // repeated large thread reductions and can starve mobile input. One
+      // gzip-compressible snapshot is bounded work and the cache remains the
+      // fallback when HTTP is unavailable. Overlapping/replayed events are
+      // still deduped by sequence in applyItem.
+      const prepared = yield* SubscriptionRef.changes(supervisor.prepared).pipe(
+        Stream.filter(Option.isSome),
+        Stream.map((current) => current.value),
+        Stream.runHead,
+      );
+      const refreshed = Option.isSome(prepared)
+        ? yield* snapshotLoader.load(prepared.value, threadId)
+        : Option.none<OrchestrationThreadDetailSnapshot>();
+      const base = Option.match(refreshed, {
+        onNone: () => cached,
+        onSome: (fresh) =>
+          Option.match(cached, {
+            onNone: () => refreshed,
+            onSome: (warm) =>
+              fresh.snapshotSequence >= warm.snapshotSequence ? refreshed : cached,
+          }),
+      });
 
       if (Option.isSome(base)) {
         yield* applyItem({ kind: "snapshot", snapshot: base.value });

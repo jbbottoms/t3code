@@ -108,6 +108,7 @@ export const KimiDriver: ProviderDriver<KimiSettings, KimiDriverEnv> = {
         providerLabel: "Kimi",
         enableCursorExtensions: false,
         coalesceCumulativeToolCallUpdates: true,
+        coalesceIncrementalContentDeltas: true,
         environment: processEnv,
         ...(eventLoggers.native ? { nativeEventLogger: eventLoggers.native } : {}),
         instanceId,

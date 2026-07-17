@@ -264,7 +264,7 @@ describe("EnvironmentThreads", () => {
     }),
   );
 
-  it.effect("resumes a warm cache via afterSequence without an HTTP fetch", () =>
+  it.effect("falls back to a warm cache when its HTTP refresh is unavailable", () =>
     Effect.gen(function* () {
       const harness = yield* makeHarness({ cached: BASE_THREAD });
 
@@ -279,10 +279,33 @@ describe("EnvironmentThreads", () => {
           value.data.value.title === "Live title",
       );
 
-      // The subscription resumed from the cached sequence and never fetched the
-      // full snapshot over HTTP.
+      // The refresh was attempted, then the subscription safely resumed from
+      // the cached sequence when no HTTP snapshot was available.
       expect(yield* Ref.get(harness.lastSubscribeAfterSequence)).toBe(CACHED_SNAPSHOT_SEQUENCE);
-      expect(yield* Ref.get(harness.loaderCalls)).toBe(0);
+      expect(yield* Ref.get(harness.loaderCalls)).toBe(1);
+    }),
+  );
+
+  it.effect("refreshes a warm cache over HTTP before resuming live events", () =>
+    Effect.gen(function* () {
+      const refreshedThread: OrchestrationThread = { ...BASE_THREAD, title: "Refreshed title" };
+      const harness = yield* makeHarness({
+        cached: BASE_THREAD,
+        httpSnapshot: Option.some({ snapshotSequence: 9, thread: refreshedThread }),
+      });
+      yield* Queue.offer(harness.inputs, titleUpdated("Live title", 10));
+
+      const state = yield* awaitThreadState(
+        harness.observed,
+        (value) =>
+          value.status === "live" &&
+          Option.isSome(value.data) &&
+          value.data.value.title === "Live title",
+      );
+
+      expect(Option.getOrThrow(state.data).title).toBe("Live title");
+      expect(yield* Ref.get(harness.loaderCalls)).toBe(1);
+      expect(yield* Ref.get(harness.lastSubscribeAfterSequence)).toBe(9);
     }),
   );
 
