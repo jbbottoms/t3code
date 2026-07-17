@@ -6,12 +6,19 @@ import {
 import * as Crypto from "effect/Crypto";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
+import * as Option from "effect/Option";
+import * as Result from "effect/Result";
+import * as Schema from "effect/Schema";
+import * as Stream from "effect/Stream";
+import * as SubscriptionRef from "effect/SubscriptionRef";
+import { RpcClientError } from "effect/unstable/rpc";
 
-import type { EnvironmentSupervisor } from "../connection/supervisor.ts";
+import { EnvironmentSupervisor } from "../connection/supervisor.ts";
+import type { SupervisorConnectionState } from "../connection/model.ts";
 import {
   type EnvironmentRpcFailure,
   type EnvironmentRpcSuccess,
-  type EnvironmentRpcUnavailableError,
+  EnvironmentRpcUnavailableError,
   request,
 } from "../rpc/client.ts";
 
@@ -78,6 +85,75 @@ function timestampedCommandMetadata(input: {
 function dispatch(command: ClientOrchestrationCommand) {
   return request(ORCHESTRATION_WS_METHODS.dispatchCommand, command);
 }
+
+const isEnvironmentRpcUnavailableError = Schema.is(EnvironmentRpcUnavailableError);
+const isRpcClientError = Schema.is(RpcClientError.RpcClientError);
+
+function isRetryableInterruptFailure(error: unknown): boolean {
+  if (isEnvironmentRpcUnavailableError(error)) {
+    return true;
+  }
+  if (!isRpcClientError(error)) {
+    return false;
+  }
+
+  switch (error.reason._tag) {
+    case "SocketReadError":
+    case "SocketWriteError":
+    case "SocketOpenError":
+    case "SocketCloseError":
+      return true;
+    case "WorkerSpawnError":
+    case "WorkerSendError":
+    case "WorkerReceiveError":
+    case "WorkerUnknownError":
+    case "HttpError":
+    case "RpcClientDefect":
+      return false;
+  }
+}
+
+function isTerminalInterruptReconnectState(state: SupervisorConnectionState): boolean {
+  return !state.desired || state.phase === "blocked";
+}
+
+const dispatchExactTurnInterrupt = Effect.fn("EnvironmentCommands.dispatchExactTurnInterrupt")(
+  function* (command: CommandOf<"thread.turn.interrupt">) {
+    const supervisor = yield* EnvironmentSupervisor;
+
+    for (;;) {
+      const sessionBeforeAttempt = yield* SubscriptionRef.get(supervisor.session);
+      const result = yield* dispatch(command).pipe(Effect.result);
+      if (Result.isSuccess(result)) {
+        return result.success;
+      }
+      if (!isRetryableInterruptFailure(result.failure)) {
+        return yield* result.failure;
+      }
+
+      const waitResult = yield* Effect.raceFirst(
+        SubscriptionRef.changes(supervisor.session).pipe(
+          Stream.filter(
+            (candidate) =>
+              Option.isSome(candidate) &&
+              (Option.isNone(sessionBeforeAttempt) ||
+                candidate.value !== sessionBeforeAttempt.value),
+          ),
+          Stream.runHead,
+          Effect.as("session" as const),
+        ),
+        SubscriptionRef.changes(supervisor.state).pipe(
+          Stream.filter(isTerminalInterruptReconnectState),
+          Stream.runHead,
+          Effect.as("terminal" as const),
+        ),
+      );
+      if (waitResult === "terminal") {
+        return yield* result.failure;
+      }
+    }
+  },
+);
 
 export const createProject: (input: CreateProjectInput) => CommandEffect = Effect.fn(
   "EnvironmentCommands.createProject",
@@ -202,12 +278,15 @@ export const interruptThreadTurn: (input: InterruptThreadTurnInput) => CommandEf
   "EnvironmentCommands.interruptThreadTurn",
 )(function* (input) {
   const metadata = yield* timestampedCommandMetadata(input);
-  return yield* dispatch({
+  const command: CommandOf<"thread.turn.interrupt"> = {
     ...input,
     type: "thread.turn.interrupt",
     commandId: metadata.commandId,
     createdAt: metadata.createdAt,
-  });
+  };
+  return yield* input.turnId === undefined
+    ? dispatch(command)
+    : dispatchExactTurnInterrupt(command);
 });
 
 export const respondToThreadApproval: (input: RespondToThreadApprovalInput) => CommandEffect =

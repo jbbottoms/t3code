@@ -31,6 +31,9 @@ import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 
 const LINUX_ICON_SIZES = [16, 22, 24, 32, 48, 64, 128, 256, 512] as const;
 const DESKTOP_APP_ID = "com.t3tools.t3code";
+const KAI_DESKTOP_APP_ID = "com.jbbottoms.t3code.kai";
+const KAI_DESKTOP_PACKAGE_NAME = "t3code-kai";
+const KAI_DESKTOP_VERSION_PATTERN = /^\d+\.\d+\.\d+-kai\.\d{8}\.\d+$/u;
 const APPLE_TEAM_ID_PATTERN = /^[A-Z0-9]{10}$/u;
 
 const BuildPlatform = Schema.Literals(["mac", "linux", "win"]);
@@ -1324,6 +1327,16 @@ export function resolveDesktopUpdateChannel(version: string): "latest" | "nightl
   return /-nightly\.\d{8}\.\d+$/.test(version) ? "nightly" : "latest";
 }
 
+export type DesktopFlavor = "stable" | "nightly" | "kai";
+
+export function resolveDesktopFlavor(version: string): DesktopFlavor {
+  if (KAI_DESKTOP_VERSION_PATTERN.test(version)) {
+    return "kai";
+  }
+
+  return resolveDesktopUpdateChannel(version) === "nightly" ? "nightly" : "stable";
+}
+
 export function resolveDesktopBuildIconAssets(version: string): DesktopBuildIconAssets {
   if (resolveDesktopUpdateChannel(version) === "nightly") {
     return {
@@ -1358,9 +1371,18 @@ export function resolvePackageManagerUserAgent(packageManager: string): string {
 }
 
 export function resolveDesktopProductName(version: string): string {
-  return resolveDesktopUpdateChannel(version) === "nightly"
-    ? "T3 Code (Nightly)"
-    : (desktopPackageJson.productName ?? "T3 Code");
+  switch (resolveDesktopFlavor(version)) {
+    case "kai":
+      return "T3 Code Kai";
+    case "nightly":
+      return "T3 Code (Nightly)";
+    case "stable":
+      return desktopPackageJson.productName ?? "T3 Code";
+  }
+}
+
+export function resolveDesktopPackageName(version: string): string {
+  return resolveDesktopFlavor(version) === "kai" ? KAI_DESKTOP_PACKAGE_NAME : "t3code";
 }
 
 export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
@@ -1377,10 +1399,14 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
       }
     | undefined,
 ) {
+  const flavor = resolveDesktopFlavor(version);
   const buildConfig: Record<string, unknown> = {
-    appId: DESKTOP_APP_ID,
+    appId: flavor === "kai" ? KAI_DESKTOP_APP_ID : DESKTOP_APP_ID,
     productName: resolveDesktopProductName(version),
-    artifactName: "T3-Code-${version}-${arch}.${ext}",
+    artifactName:
+      flavor === "kai"
+        ? "T3-Code-Kai-${version}-${arch}.${ext}"
+        : "T3-Code-${version}-${arch}.${ext}",
     directories: {
       buildResources: "apps/desktop/resources",
     },
@@ -1399,17 +1425,19 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
     // there's no duplication.
     asarUnpack: [...DESKTOP_ASAR_UNPACK, "apps/server/dist/**", "**/node_modules/**"],
   };
-  const updateChannel = resolveDesktopUpdateChannel(version);
-  const publishConfig = yield* resolveGitHubPublishConfig(updateChannel);
-  if (publishConfig) {
-    buildConfig.publish = [publishConfig];
-  } else if (mockUpdates) {
-    buildConfig.publish = [
-      {
-        provider: "generic",
-        url: resolveMockUpdateServerUrl(mockUpdateServerPort),
-      },
-    ];
+  if (flavor !== "kai") {
+    const updateChannel = resolveDesktopUpdateChannel(version);
+    const publishConfig = yield* resolveGitHubPublishConfig(updateChannel);
+    if (publishConfig) {
+      buildConfig.publish = [publishConfig];
+    } else if (mockUpdates) {
+      buildConfig.publish = [
+        {
+          provider: "generic",
+          url: resolveMockUpdateServerUrl(mockUpdateServerPort),
+        },
+      ];
+    }
   }
 
   if (platform === "mac") {
@@ -1435,12 +1463,12 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
   if (platform === "linux") {
     buildConfig.linux = {
       target: [target],
-      executableName: "t3code",
+      executableName: resolveDesktopPackageName(version),
       icon: "icons",
       category: "Development",
       desktop: {
         entry: {
-          StartupWMClass: "t3code",
+          StartupWMClass: resolveDesktopPackageName(version),
         },
       },
     };
@@ -1456,6 +1484,9 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
       // packaged executable with Electron's stock icon.
       signAndEditExecutable: true,
     };
+    if (flavor === "kai") {
+      winConfig.executableName = KAI_DESKTOP_PACKAGE_NAME;
+    }
     if (signed) {
       winConfig.azureSignOptions = yield* AzureTrustedSigningOptionsConfig;
     }
@@ -1742,7 +1773,7 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
     stageDependencies,
   );
   const stagePackageJson: StagePackageJson = {
-    name: "t3code",
+    name: resolveDesktopPackageName(appVersion),
     version: appVersion,
     buildVersion: appVersion,
     t3codeCommitHash: commitHash,

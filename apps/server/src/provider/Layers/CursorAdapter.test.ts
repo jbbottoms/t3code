@@ -12,6 +12,7 @@ import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
+import * as Queue from "effect/Queue";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
@@ -20,6 +21,7 @@ import { createModelSelection } from "@t3tools/shared/model";
 import {
   ApprovalRequestId,
   CursorSettings,
+  isToolLifecycleItemType,
   ProviderDriverKind,
   type ProviderRuntimeEvent,
   ThreadId,
@@ -28,7 +30,9 @@ import {
 
 import { ServerConfig } from "../../config.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
+import * as AcpSessionRuntime from "../acp/AcpSessionRuntime.ts";
 import type { CursorAdapterShape } from "../Services/CursorAdapter.ts";
+import type { EventNdjsonLogger } from "./EventNdjsonLogger.ts";
 import { makeCursorAdapter } from "./CursorAdapter.ts";
 const decodeCursorSettings = Schema.decodeSync(CursorSettings);
 
@@ -219,6 +223,187 @@ const makeResolveCursorSettings = Effect.gen(function* () {
     ),
   );
 });
+
+it.effect(
+  "coalesces cumulative file-change publications and full native payload logs together",
+  () =>
+    Effect.gen(function* () {
+      const eventQueue = yield* Queue.unbounded<AcpSessionRuntime.AcpSessionRuntimeEvent>();
+      const nativeWrites: Array<unknown> = [];
+      const runtimeEvents: Array<ProviderRuntimeEvent> = [];
+      const twoToolEventsPublished = yield* Deferred.make<void>();
+      let protocolSummaryLoggerConfigured = false;
+
+      const runtime = {
+        handleRequestPermission: () => Effect.sync(() => undefined),
+        start: () =>
+          Effect.succeed({
+            sessionId: "coalescing-session",
+            initializeResult: {} as never,
+            sessionSetupResult: {} as never,
+            modelConfigId: undefined,
+          }),
+        getEvents: () => Stream.fromQueue(eventQueue),
+        getModeState: Effect.sync(() => undefined),
+      } as unknown as AcpSessionRuntime.AcpSessionRuntime["Service"];
+      const nativeEventLogger = {
+        filePath: "memory://native-events",
+        write: (event) =>
+          Effect.sync(() => {
+            nativeWrites.push(event);
+          }),
+        close: () => Effect.sync(() => undefined),
+      } satisfies EventNdjsonLogger;
+      const adapter = yield* makeCursorAdapter(decodeCursorSettings({}), {
+        providerKind: ProviderDriverKind.make("kimi"),
+        providerLabel: "Kimi",
+        enableCursorExtensions: false,
+        instanceId: ProviderInstanceId.make("kimi"),
+        coalesceCumulativeToolCallUpdates: true,
+        cumulativeToolCallUpdateInterval: "1 hour",
+        nativeEventLogger,
+        makeAcpRuntime: (input) => {
+          protocolSummaryLoggerConfigured = input.protocolLogging !== undefined;
+          return Effect.succeed(runtime);
+        },
+      });
+      const runtimeEventsFiber = yield* Stream.runForEach(adapter.streamEvents, (event) =>
+        Effect.gen(function* () {
+          runtimeEvents.push(event);
+          const toolEvents = runtimeEvents.filter(
+            (candidate) =>
+              (candidate.type === "item.updated" || candidate.type === "item.completed") &&
+              isToolLifecycleItemType(candidate.payload.itemType),
+          );
+          if (toolEvents.length === 2) {
+            yield* Deferred.succeed(twoToolEventsPublished, undefined).pipe(Effect.ignore);
+          }
+        }),
+      ).pipe(Effect.forkChild);
+      yield* Effect.yieldNow;
+
+      const threadId = ThreadId.make("kimi-coalesced-native-log");
+      yield* adapter.startSession({
+        threadId,
+        provider: ProviderDriverKind.make("kimi"),
+        cwd: process.cwd(),
+        runtimeMode: "full-access",
+      });
+      assert.isTrue(protocolSummaryLoggerConfigured);
+
+      const makeToolUpdate = (
+        index: number,
+        status: "inProgress" | "completed" = "inProgress",
+      ): Extract<
+        AcpSessionRuntime.AcpSessionRuntimeEvent,
+        { readonly _tag: "ToolCallUpdated" }
+      > => {
+        const detail = "x".repeat(index);
+        return {
+          _tag: "ToolCallUpdated",
+          toolCall: {
+            toolCallId: "file-change-1",
+            kind: "edit",
+            title: "Edit file",
+            status,
+            detail,
+            data: { marker: index, rawInput: detail },
+          },
+          rawPayload: {
+            sessionUpdate: "tool_call_update",
+            marker: index,
+            status,
+            detail,
+          },
+        };
+      };
+      const waitUntilProcessed = Effect.fn("waitUntilCoalescedEventsProcessed")(function* () {
+        const acknowledge = yield* Deferred.make<void>();
+        yield* Queue.offer(eventQueue, { _tag: "EventStreamBarrier", acknowledge });
+        yield* Deferred.await(acknowledge);
+      });
+
+      for (let index = 1; index <= 250; index += 1) {
+        yield* Queue.offer(eventQueue, makeToolUpdate(index));
+      }
+      yield* waitUntilProcessed();
+
+      const toolEventsBeforeTerminal = runtimeEvents.filter(
+        (event) =>
+          (event.type === "item.updated" || event.type === "item.completed") &&
+          isToolLifecycleItemType(event.payload.itemType),
+      );
+      assert.lengthOf(toolEventsBeforeTerminal, 0);
+      assert.lengthOf(nativeWrites, 0);
+
+      yield* Queue.offer(eventQueue, makeToolUpdate(251, "completed"));
+      yield* waitUntilProcessed();
+      yield* Deferred.await(twoToolEventsPublished);
+
+      const toolEvents = runtimeEvents.filter(
+        (event) =>
+          (event.type === "item.updated" || event.type === "item.completed") &&
+          isToolLifecycleItemType(event.payload.itemType),
+      );
+      assert.lengthOf(toolEvents, 2);
+      const latestPartial = toolEvents[0];
+      assert.equal(latestPartial?.type, "item.updated");
+      if (latestPartial?.type === "item.updated") {
+        assert.equal(latestPartial.payload.itemType, "file_change");
+        assert.equal(latestPartial.payload.detail, "x".repeat(250));
+        assert.deepEqual(latestPartial.payload.data, {
+          marker: 250,
+          rawInput: "x".repeat(250),
+        });
+        assert.deepEqual(latestPartial.raw?.payload, {
+          sessionUpdate: "tool_call_update",
+          marker: 250,
+          status: "inProgress",
+          detail: "x".repeat(250),
+        });
+      }
+
+      const notificationPayloads = nativeWrites.flatMap((entry) => {
+        if (typeof entry !== "object" || entry === null || !("event" in entry)) {
+          return [];
+        }
+        const nativeEvent = entry.event;
+        if (
+          typeof nativeEvent !== "object" ||
+          nativeEvent === null ||
+          !("kind" in nativeEvent) ||
+          nativeEvent.kind !== "notification" ||
+          !("payload" in nativeEvent)
+        ) {
+          return [];
+        }
+        return [nativeEvent.payload];
+      });
+      assert.lengthOf(notificationPayloads, 2);
+      assert.deepEqual(notificationPayloads[0], {
+        sessionUpdate: "tool_call_update",
+        marker: 250,
+        status: "inProgress",
+        detail: "x".repeat(250),
+      });
+      assert.deepEqual(notificationPayloads[1], {
+        sessionUpdate: "tool_call_update",
+        marker: 251,
+        status: "completed",
+        detail: "x".repeat(251),
+      });
+
+      yield* adapter.stopSession(threadId);
+      yield* Fiber.interrupt(runtimeEventsFiber);
+    }).pipe(
+      Effect.scoped,
+      Effect.provide(
+        ServerConfig.layerTest(process.cwd(), {
+          prefix: "t3code-cursor-adapter-coalescing-test-",
+        }).pipe(Layer.provideMerge(NodeServices.layer)),
+      ),
+    ),
+);
 
 const cursorAdapterTestLayer = it.layer(
   Layer.effect(

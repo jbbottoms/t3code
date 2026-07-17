@@ -153,6 +153,30 @@ describe("DesktopAppIdentity", () => {
     ),
   );
 
+  it.effect("does not fall back to the stock legacy userData path for Kai", () =>
+    withIdentity(
+      Effect.gen(function* () {
+        const identity = yield* DesktopAppIdentity.DesktopAppIdentity;
+        const environment = yield* DesktopEnvironment.DesktopEnvironment;
+        const userDataPath = yield* identity.resolveUserDataPath;
+
+        assert.equal(
+          userDataPath,
+          environment.path.join(environment.appDataDirectory, "t3code-kai"),
+        );
+        assert.notInclude(userDataPath, "T3 Code (Alpha)");
+      }),
+      {
+        environment: {
+          appVersion: "0.0.29-kai.20260716.1",
+          platform: "win32",
+          isPackaged: true,
+        },
+        legacyPathExists: true,
+      },
+    ),
+  );
+
   it.effect("preserves failures while inspecting the legacy userData path", () => {
     const legacyPath = "/Users/alice/Library/Application Support/T3 Code (Alpha)";
     const cause = PlatformError.systemError({

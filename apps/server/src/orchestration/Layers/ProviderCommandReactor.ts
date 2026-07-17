@@ -29,6 +29,8 @@ import { resolveThreadWorkspaceCwd } from "../../checkpointing/Utils.ts";
 import { increment, orchestrationEventsProcessedTotal } from "../../observability/Metrics.ts";
 import { ProviderAdapterRequestError } from "../../provider/Errors.ts";
 import type { ProviderServiceError } from "../../provider/Errors.ts";
+import { ProjectionTurnRepositoryLive } from "../../persistence/Layers/ProjectionTurns.ts";
+import { ProjectionTurnRepository } from "../../persistence/Services/ProjectionTurns.ts";
 import { TextGeneration } from "../../textGeneration/TextGeneration.ts";
 import { ProviderService } from "../../provider/Services/ProviderService.ts";
 import { ProviderRegistry } from "../../provider/Services/ProviderRegistry.ts";
@@ -190,6 +192,7 @@ const make = Effect.gen(function* () {
   const crypto = yield* Crypto.Crypto;
   const orchestrationEngine = yield* OrchestrationEngineService;
   const projectionSnapshotQuery = yield* ProjectionSnapshotQuery;
+  const projectionTurnRepository = yield* ProjectionTurnRepository;
   const providerService = yield* ProviderService;
   const providerRegistry = yield* ProviderRegistry;
   const gitWorkflow = yield* GitWorkflowService;
@@ -315,6 +318,32 @@ const make = Effect.gen(function* () {
     return yield* projectionSnapshotQuery
       .getThreadDetailById(threadId)
       .pipe(Effect.map(Option.getOrUndefined));
+  });
+
+  const resolveCurrentExactTurn = Effect.fnUntraced(function* (threadId: ThreadId, turnId: TurnId) {
+    const thread = yield* resolveThread(threadId);
+    if (
+      !thread?.session ||
+      thread.session.status === "stopped" ||
+      thread.session.activeTurnId !== turnId
+    ) {
+      return Option.none();
+    }
+
+    const providerSession = (yield* providerService.listSessions()).find(
+      (session) => session.threadId === threadId,
+    );
+    if (providerSession?.activeTurnId !== undefined && providerSession.activeTurnId !== turnId) {
+      return Option.none();
+    }
+
+    // The projection pipeline persists this marker in the command transaction
+    // before the start request is published to this reactor. Read it last so a
+    // newer accepted start wins even while its provider turn has not projected.
+    const pendingTurnStart = yield* projectionTurnRepository.getPendingTurnStartByThreadId({
+      threadId,
+    });
+    return Option.isSome(pendingTurnStart) ? Option.none() : Option.some(thread);
   });
 
   const rejectStartedThreadModelChangeIfRequired = Effect.fnUntraced(function* (input: {
@@ -863,8 +892,14 @@ const make = Effect.gen(function* () {
   const processTurnInterruptRequested = Effect.fn("processTurnInterruptRequested")(function* (
     event: Extract<ProviderIntentEvent, { type: "thread.turn-interrupt-requested" }>,
   ) {
-    const thread = yield* resolveThread(event.payload.threadId);
+    let thread = yield* resolveThread(event.payload.threadId);
     if (!thread) {
+      return;
+    }
+    if (
+      event.payload.turnId !== undefined &&
+      thread.session?.activeTurnId !== event.payload.turnId
+    ) {
       return;
     }
     const hasSession = thread.session && thread.session.status !== "stopped";
@@ -879,18 +914,44 @@ const make = Effect.gen(function* () {
       });
     }
 
+    if (event.payload.turnId !== undefined) {
+      const currentExactTurn = yield* resolveCurrentExactTurn(
+        event.payload.threadId,
+        event.payload.turnId,
+      );
+      if (Option.isNone(currentExactTurn)) {
+        return;
+      }
+      thread = currentExactTurn.value;
+    }
+
     // Orchestration turn ids are not provider turn ids, so interrupt by session.
     yield* providerService.interruptTurn({ threadId: event.payload.threadId });
+
+    if (event.payload.turnId !== undefined) {
+      const currentExactTurn = yield* resolveCurrentExactTurn(
+        event.payload.threadId,
+        event.payload.turnId,
+      );
+      if (Option.isNone(currentExactTurn)) {
+        return;
+      }
+      thread = currentExactTurn.value;
+    }
 
     // Interrupt is an acknowledged lifecycle transition, not merely a provider
     // side effect. A recovered adapter can have no in-memory active turn to
     // emit `turn.completed` for (for example, after a server restart), while
     // the durable projection still says the old turn is running. Reconcile the
     // projection here so clients do not keep showing an inert Stop action.
+    const activeSession = thread.session;
+    if (!activeSession || activeSession.status === "stopped") {
+      return;
+    }
     yield* setThreadSession({
       threadId: thread.id,
       session: {
-        ...thread.session,
+        ...activeSession,
         status: "ready",
         activeTurnId: null,
         lastError: null,
@@ -1102,4 +1163,6 @@ const make = Effect.gen(function* () {
   } satisfies ProviderCommandReactorShape;
 });
 
-export const ProviderCommandReactorLive = Layer.effect(ProviderCommandReactor, make);
+export const ProviderCommandReactorLive = Layer.effect(ProviderCommandReactor, make).pipe(
+  Layer.provide(ProjectionTurnRepositoryLive),
+);

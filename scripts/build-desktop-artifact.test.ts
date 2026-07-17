@@ -28,6 +28,8 @@ import {
   resolveFffNativeDependencies,
   resolveBuildOptions,
   resolveDesktopBuildIconAssets,
+  resolveDesktopFlavor,
+  resolveDesktopPackageName,
   resolveDesktopProductName,
   resolveDesktopUpdateChannel,
   resolveGitHubPublishConfig,
@@ -78,6 +80,13 @@ function iconResizeSpawnerLayer(
 }
 
 it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
+  it("resolves stable, nightly, and Kai desktop flavors from build versions", () => {
+    assert.equal(resolveDesktopFlavor("0.0.17"), "stable");
+    assert.equal(resolveDesktopFlavor("0.0.17-nightly.20260413.42"), "nightly");
+    assert.equal(resolveDesktopFlavor("0.0.29-kai.20260716.1"), "kai");
+    assert.equal(resolveDesktopFlavor("0.0.29-kai.20260716"), "stable");
+  });
+
   it("resolves the dedicated nightly updater channel from nightly versions", () => {
     assert.equal(resolveDesktopUpdateChannel("0.0.17-nightly.20260413.42"), "nightly");
     assert.equal(resolveDesktopUpdateChannel("0.0.17"), "latest");
@@ -86,6 +95,12 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
   it("switches desktop packaging product names to nightly for nightly builds", () => {
     assert.equal(resolveDesktopProductName("0.0.17"), "T3 Code (Alpha)");
     assert.equal(resolveDesktopProductName("0.0.17-nightly.20260413.42"), "T3 Code (Nightly)");
+    assert.equal(resolveDesktopProductName("0.0.29-kai.20260716.1"), "T3 Code Kai");
+  });
+
+  it("uses a distinct staged package name for Kai artifacts", () => {
+    assert.equal(resolveDesktopPackageName("0.0.17"), "t3code");
+    assert.equal(resolveDesktopPackageName("0.0.29-kai.20260716.1"), "t3code-kai");
   });
 
   it("switches desktop packaging icons to the nightly artwork for nightly versions", () => {
@@ -490,6 +505,39 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
       assert.equal(win.signAndEditExecutable, true);
       assert.notProperty(win, "azureSignOptions");
     }).pipe(Effect.provide(ConfigProvider.layer(ConfigProvider.fromEnv({ env: {} })))),
+  );
+
+  it.effect("isolates Kai package and Windows executable identity without an update feed", () =>
+    Effect.gen(function* () {
+      const config = yield* createBuildConfig(
+        "win",
+        "nsis",
+        "0.0.29-kai.20260716.1",
+        false,
+        true,
+        4123,
+        undefined,
+      );
+      const win = config.win as Record<string, unknown>;
+
+      assert.equal(config.appId, "com.jbbottoms.t3code.kai");
+      assert.equal(config.productName, "T3 Code Kai");
+      assert.equal(config.artifactName, "T3-Code-Kai-${version}-${arch}.${ext}");
+      assert.equal(resolveDesktopPackageName("0.0.29-kai.20260716.1"), "t3code-kai");
+      assert.equal(win.executableName, "t3code-kai");
+      assert.notProperty(config, "publish");
+    }).pipe(
+      Effect.provide(
+        ConfigProvider.layer(
+          ConfigProvider.fromEnv({
+            env: {
+              GITHUB_REPOSITORY: "pingdotgg/t3code",
+              T3CODE_DESKTOP_UPDATE_REPOSITORY: "pingdotgg/t3code",
+            },
+          }),
+        ),
+      ),
+    ),
   );
 
   it("promotes target fff binaries to direct staged dependencies", () => {

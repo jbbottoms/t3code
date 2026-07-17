@@ -95,6 +95,33 @@ describe("DesktopEnvironment", () => {
     }),
   );
 
+  it.effect("derives isolated Kai production branding and runtime identity", () =>
+    Effect.gen(function* () {
+      const environment = yield* makeEnvironment(
+        {
+          platform: "win32",
+          appVersion: "0.0.29-kai.20260716.1",
+          isPackaged: true,
+        },
+        { T3CODE_HOME: "/tmp/t3" },
+      );
+
+      assert.equal(environment.isDevelopment, false);
+      assert.deepEqual(environment.branding, {
+        baseName: "T3 Code Kai",
+        stageLabel: "Alpha",
+        displayName: "T3 Code Kai",
+      });
+      assert.equal(environment.displayName, "T3 Code Kai");
+      assert.equal(environment.userDataDirName, "t3code-kai");
+      assert.equal(environment.legacyUserDataDirName, "t3code-kai");
+      assert.equal(environment.appUserModelId, "com.jbbottoms.t3code.kai");
+      assert.equal(environment.linuxDesktopEntryName, "t3code-kai.desktop");
+      assert.equal(environment.linuxWmClass, "t3code-kai");
+      assert.notEqual(environment.legacyUserDataDirName, "T3 Code (Alpha)");
+    }),
+  );
+
   it.effect("uses a configured app user model id override", () =>
     Effect.gen(function* () {
       const environment = yield* makeEnvironment(

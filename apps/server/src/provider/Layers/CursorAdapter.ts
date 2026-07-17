@@ -16,6 +16,7 @@ import {
   type ProviderUserInputAnswers,
   ProviderDriverKind,
   ProviderInstanceId,
+  isToolLifecycleItemType,
   RuntimeRequestId,
   type RuntimeMode,
   type ThreadId,
@@ -23,6 +24,7 @@ import {
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import * as Crypto from "effect/Crypto";
+import * as Duration from "effect/Duration";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
@@ -75,6 +77,10 @@ import {
   extractTodosAsPlan,
 } from "../acp/CursorAcpExtension.ts";
 import { type CursorAdapterShape } from "../Services/CursorAdapter.ts";
+import {
+  type CumulativeToolCallUpdateCoalescer,
+  makeCumulativeToolCallUpdateCoalescer,
+} from "./CumulativeToolCallUpdateCoalescer.ts";
 import { resolveCursorAcpBaseModelId } from "./CursorProvider.ts";
 import { type EventNdjsonLogger, makeEventNdjsonLogger } from "./EventNdjsonLogger.ts";
 const encodeUnknownJsonStringExit = Schema.encodeUnknownExit(Schema.UnknownFromJsonString);
@@ -102,6 +108,10 @@ export interface CursorAdapterLiveOptions {
   readonly environment?: NodeJS.ProcessEnv;
   readonly nativeEventLogPath?: string;
   readonly nativeEventLogger?: EventNdjsonLogger;
+  /** Coalesce prefix-growing ACP tool lifecycle updates before canonical publication. */
+  readonly coalesceCumulativeToolCallUpdates?: boolean;
+  /** Test override for the maximum time a cumulative tool update may remain buffered. */
+  readonly cumulativeToolCallUpdateInterval?: Duration.Input;
   /**
    * Selections are honored when `modelSelection.instanceId` matches this value.
    * Defaults to the legacy built-in instance id (`cursor`).
@@ -345,6 +355,7 @@ export function makeCursorAdapter(
     const makeAcpNativeLoggers = yield* makeAcpNativeLoggerFactory();
 
     const sessions = new Map<ThreadId, CursorSessionContext>();
+    const runtimeEventCoalescers = new Map<ThreadId, CumulativeToolCallUpdateCoalescer>();
     const threadLocksRef = yield* SynchronizedRef.make(new Map<string, Semaphore.Semaphore>());
     const runtimeEventPubSub = yield* PubSub.unbounded<ProviderRuntimeEvent>();
 
@@ -373,8 +384,11 @@ export function makeCursorAdapter(
         ),
       );
 
-    const offerRuntimeEvent = (event: ProviderRuntimeEvent) =>
+    const publishRuntimeEvent = (event: ProviderRuntimeEvent) =>
       PubSub.publish(runtimeEventPubSub, event).pipe(Effect.asVoid);
+
+    const offerRuntimeEvent = (event: ProviderRuntimeEvent) =>
+      runtimeEventCoalescers.get(event.threadId)?.offer(event) ?? publishRuntimeEvent(event);
 
     const getThreadSemaphore = (threadId: string) =>
       SynchronizedRef.modifyEffect(threadLocksRef, (current) => {
@@ -421,6 +435,23 @@ export function makeCursorAdapter(
           },
           threadId,
         );
+      });
+
+    const publishCoalescedRuntimeEvent = (event: ProviderRuntimeEvent) =>
+      Effect.gen(function* () {
+        if (
+          (event.type === "item.updated" || event.type === "item.completed") &&
+          isToolLifecycleItemType(event.payload.itemType) &&
+          event.raw?.source === "acp.jsonrpc" &&
+          event.raw.method === "session/update"
+        ) {
+          // Native logging is diagnostic; a write failure must not suppress the
+          // canonical event that drives persistence and clients.
+          yield* logNative(event.threadId, "session/update", event.raw.payload, "acp.jsonrpc").pipe(
+            Effect.ignore,
+          );
+        }
+        yield* publishRuntimeEvent(event);
       });
 
     const emitPlanUpdate = (
@@ -475,6 +506,12 @@ export function makeCursorAdapter(
         if (ctx.notificationFiber) {
           yield* Fiber.interrupt(ctx.notificationFiber);
         }
+        const runtimeEventCoalescer = runtimeEventCoalescers.get(ctx.threadId);
+        if (runtimeEventCoalescer) {
+          yield* runtimeEventCoalescer.flush;
+          runtimeEventCoalescers.delete(ctx.threadId);
+          yield* runtimeEventCoalescer.close;
+        }
         yield* Effect.ignore(Scope.close(ctx.scope, Exit.void));
         sessions.delete(ctx.threadId);
         yield* offerRuntimeEvent({
@@ -517,8 +554,26 @@ export function makeCursorAdapter(
           const pendingUserInputs = new Map<ApprovalRequestId, PendingUserInput>();
           const sessionScope = yield* Scope.make("sequential");
           let sessionScopeTransferred = false;
+          const runtimeEventCoalescer = options?.coalesceCumulativeToolCallUpdates
+            ? yield* makeCumulativeToolCallUpdateCoalescer({
+                scope: sessionScope,
+                publish: publishCoalescedRuntimeEvent,
+                ...(options.cumulativeToolCallUpdateInterval
+                  ? { interval: options.cumulativeToolCallUpdateInterval }
+                  : {}),
+              })
+            : undefined;
+          if (runtimeEventCoalescer) {
+            runtimeEventCoalescers.set(input.threadId, runtimeEventCoalescer);
+          }
           yield* Effect.addFinalizer(() =>
-            sessionScopeTransferred ? Effect.void : Scope.close(sessionScope, Exit.void),
+            sessionScopeTransferred
+              ? Effect.void
+              : Effect.gen(function* () {
+                  runtimeEventCoalescers.delete(input.threadId);
+                  yield* runtimeEventCoalescer?.close ?? Effect.void;
+                  yield* Scope.close(sessionScope, Exit.void);
+                }),
           );
           let ctx!: CursorSessionContext;
 
@@ -845,22 +900,26 @@ export function makeCursorAdapter(
                     );
                     return;
                   case "ToolCallUpdated":
-                    yield* logNative(
-                      ctx.threadId,
-                      "session/update",
-                      event.rawPayload,
-                      "acp.jsonrpc",
-                    );
-                    yield* offerRuntimeEvent(
-                      makeAcpToolCallEvent({
-                        stamp: yield* makeEventStamp(),
-                        provider,
-                        threadId: ctx.threadId,
-                        turnId: ctx.activeTurnId,
-                        toolCall: event.toolCall,
-                        rawPayload: event.rawPayload,
-                      }),
-                    );
+                    const toolCallEvent = makeAcpToolCallEvent({
+                      stamp: yield* makeEventStamp(),
+                      provider,
+                      threadId: ctx.threadId,
+                      turnId: ctx.activeTurnId,
+                      toolCall: event.toolCall,
+                      rawPayload: event.rawPayload,
+                    });
+                    const runtimeEventCoalescer = runtimeEventCoalescers.get(ctx.threadId);
+                    if (runtimeEventCoalescer) {
+                      yield* runtimeEventCoalescer.offer(toolCallEvent);
+                    } else {
+                      yield* logNative(
+                        ctx.threadId,
+                        "session/update",
+                        event.rawPayload,
+                        "acp.jsonrpc",
+                      );
+                      yield* publishRuntimeEvent(toolCallEvent);
+                    }
                     return;
                   case "ContentDelta":
                     yield* logNative(

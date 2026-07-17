@@ -1,7 +1,11 @@
 import * as Crypto from "effect/Crypto";
 import { Atom } from "effect/unstable/reactivity";
 
-import { createAtomCommandScheduler, createEnvironmentCommand } from "./runtime.ts";
+import {
+  type AtomCommandConcurrency,
+  createAtomCommandScheduler,
+  createEnvironmentCommand,
+} from "./runtime.ts";
 import {
   type ArchiveThreadInput,
   type CreateThreadInput,
@@ -32,6 +36,17 @@ import {
 } from "../operations/commands.ts";
 import type { EnvironmentRegistry } from "../connection/registry.ts";
 
+type InterruptTurnScheduleInput = {
+  readonly environmentId: string;
+  readonly input: InterruptThreadTurnInput;
+};
+
+export const interruptTurnConcurrency: AtomCommandConcurrency<InterruptTurnScheduleInput> = {
+  mode: "singleFlight",
+  key: ({ environmentId, input }) =>
+    JSON.stringify([environmentId, input.threadId, input.turnId ?? null]),
+};
+
 export type {
   ArchiveThreadInput,
   CreateThreadInput,
@@ -52,6 +67,7 @@ export function createThreadEnvironmentAtoms<R, E>(
   runtime: Atom.AtomRuntime<EnvironmentRegistry | Crypto.Crypto | R, E>,
 ) {
   const scheduler = createAtomCommandScheduler();
+  const interruptScheduler = createAtomCommandScheduler();
   const concurrency = {
     mode: "serial" as const,
     key: ({ environmentId, input }: { environmentId: string; input: { threadId: string } }) =>
@@ -109,8 +125,8 @@ export function createThreadEnvironmentAtoms<R, E>(
     interruptTurn: createEnvironmentCommand(runtime, {
       label: "environment-data:commands:thread:interrupt-turn",
       execute: (input: InterruptThreadTurnInput) => interruptThreadTurn(input),
-      scheduler,
-      concurrency,
+      scheduler: interruptScheduler,
+      concurrency: interruptTurnConcurrency,
     }),
     respondToApproval: createEnvironmentCommand(runtime, {
       label: "environment-data:commands:thread:respond-to-approval",

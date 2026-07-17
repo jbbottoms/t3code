@@ -1,12 +1,16 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
+import type { EditorId } from "@t3tools/contracts";
 import * as ConfigProvider from "effect/ConfigProvider";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
+import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
 import * as Sink from "effect/Sink";
 import * as Stream from "effect/Stream";
+import { TestClock } from "effect/testing";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 
 import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
@@ -153,6 +157,104 @@ it.effect("discovers editors through the service API", () =>
     assert.equal(editors.includes("vscode"), true);
     assert.equal(editors.includes("file-manager"), true);
   }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+);
+
+it.effect("deduplicates slow discovery and bounds the initial config wait", () =>
+  Effect.gen(function* () {
+    const releaseDiscovery = yield* Deferred.make<ReadonlyArray<EditorId>>();
+    const discoveryStarted = yield* Deferred.make<void>();
+    let discoveryCount = 0;
+    const resolve = yield* ExternalLauncher.makeAvailableEditorsResolver({
+      initialWait: "50 millis",
+      discover: Effect.sync(() => {
+        discoveryCount += 1;
+      }).pipe(
+        Effect.andThen(Deferred.succeed(discoveryStarted, undefined)),
+        Effect.andThen(Deferred.await(releaseDiscovery)),
+      ),
+    });
+
+    const first = yield* resolve().pipe(Effect.forkScoped);
+    yield* Deferred.await(discoveryStarted);
+    const second = yield* resolve().pipe(Effect.forkScoped);
+    yield* Effect.yieldNow;
+    assert.equal(discoveryCount, 1);
+
+    yield* TestClock.adjust("50 millis");
+    assert.deepEqual(yield* Fiber.join(first), []);
+    assert.deepEqual(yield* Fiber.join(second), []);
+    assert.equal(discoveryCount, 1);
+
+    yield* Deferred.succeed(releaseDiscovery, ["vscode"]);
+    yield* Effect.yieldNow;
+    yield* Effect.yieldNow;
+    assert.deepEqual(yield* resolve(), ["vscode"]);
+  }).pipe(Effect.scoped, Effect.provide(TestClock.layer())),
+);
+
+it.effect("returns stale editors immediately while one background refresh updates the cache", () =>
+  Effect.gen(function* () {
+    const firstDiscovery = yield* Deferred.make<ReadonlyArray<EditorId>>();
+    const secondDiscovery = yield* Deferred.make<ReadonlyArray<EditorId>>();
+    let discoveryCount = 0;
+    const resolve = yield* ExternalLauncher.makeAvailableEditorsResolver({
+      cacheTtl: "100 millis",
+      initialWait: "50 millis",
+      discover: Effect.suspend(() => {
+        discoveryCount += 1;
+        return Deferred.await(discoveryCount === 1 ? firstDiscovery : secondDiscovery);
+      }),
+    });
+
+    const initial = yield* resolve().pipe(Effect.forkScoped);
+    yield* Effect.yieldNow;
+    yield* Deferred.succeed(firstDiscovery, ["vscode"]);
+    assert.deepEqual(yield* Fiber.join(initial), ["vscode"]);
+
+    yield* TestClock.adjust("101 millis");
+    assert.deepEqual(yield* resolve(), ["vscode"]);
+    yield* Effect.yieldNow;
+    assert.equal(discoveryCount, 2);
+    assert.deepEqual(yield* resolve(), ["vscode"]);
+    assert.equal(discoveryCount, 2);
+
+    yield* Deferred.succeed(secondDiscovery, ["cursor"]);
+    yield* Effect.yieldNow;
+    yield* Effect.yieldNow;
+    assert.deepEqual(yield* resolve(), ["cursor"]);
+  }).pipe(Effect.scoped, Effect.provide(TestClock.layer())),
+);
+
+it.effect("retains stale editors and applies a cooldown after failed refreshes", () =>
+  Effect.gen(function* () {
+    let discoveryCount = 0;
+    const resolve = yield* ExternalLauncher.makeAvailableEditorsResolver({
+      cacheTtl: "100 millis",
+      initialWait: "50 millis",
+      discover: Effect.suspend(() => {
+        discoveryCount += 1;
+        return discoveryCount === 1
+          ? Effect.succeed<ReadonlyArray<EditorId>>(["vscode"])
+          : Effect.fail("discovery failed" as const);
+      }),
+    });
+
+    assert.deepEqual(yield* resolve(), ["vscode"]);
+    yield* TestClock.adjust("101 millis");
+
+    assert.deepEqual(yield* resolve(), ["vscode"]);
+    yield* Effect.yieldNow;
+    yield* Effect.yieldNow;
+    assert.equal(discoveryCount, 2);
+
+    assert.deepEqual(yield* resolve(), ["vscode"]);
+    assert.equal(discoveryCount, 2);
+
+    yield* TestClock.adjust("101 millis");
+    assert.deepEqual(yield* resolve(), ["vscode"]);
+    yield* Effect.yieldNow;
+    assert.equal(discoveryCount, 3);
+  }).pipe(Effect.scoped, Effect.provide(TestClock.layer())),
 );
 
 it.effect("rejects unknown editors through the service API", () =>

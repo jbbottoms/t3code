@@ -19,14 +19,20 @@ import {
 } from "@t3tools/contracts";
 import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
 import { isCommandAvailable, resolveSpawnCommand } from "@t3tools/shared/shell";
+import * as Clock from "effect/Clock";
 import * as Config from "effect/Config";
 import * as Context from "effect/Context";
+import * as Deferred from "effect/Deferred";
+import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Encoding from "effect/Encoding";
+import * as Exit from "effect/Exit";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
+import * as Scope from "effect/Scope";
+import * as Semaphore from "effect/Semaphore";
 import * as ChildProcess from "effect/unstable/process/ChildProcess";
 import * as ChildProcessSpawner from "effect/unstable/process/ChildProcessSpawner";
 
@@ -78,6 +84,8 @@ const DETACHED_IGNORE_STDIO_OPTIONS = {
   stdout: "ignore",
   stderr: "ignore",
 } as const satisfies ChildProcess.CommandOptions;
+export const AVAILABLE_EDITORS_CACHE_TTL = Duration.minutes(1);
+export const AVAILABLE_EDITORS_INITIAL_WAIT = Duration.millis(100);
 
 const compactEnv = (input: Record<string, Option.Option<string>>): NodeJS.ProcessEnv =>
   Object.fromEntries(
@@ -298,6 +306,76 @@ const resolveAvailableEditors = Effect.fn("externalLauncher.resolveAvailableEdit
   return yield* buildAvailableEditors(platform, env);
 });
 
+export const makeAvailableEditorsResolver = Effect.fn(
+  "externalLauncher.makeAvailableEditorsResolver",
+)(function* <E>(input: {
+  readonly discover: Effect.Effect<ReadonlyArray<EditorId>, E>;
+  readonly cacheTtl?: Duration.Input;
+  readonly initialWait?: Duration.Input;
+}) {
+  const scope = yield* Scope.Scope;
+  const gate = yield* Semaphore.make(1);
+  const cacheTtlMillis = Duration.toMillis(input.cacheTtl ?? AVAILABLE_EDITORS_CACHE_TTL);
+  const initialWait = input.initialWait ?? AVAILABLE_EDITORS_INITIAL_WAIT;
+  let cached: ReadonlyArray<EditorId> | undefined;
+  let refreshAfterMillis = 0;
+  let inFlight: Deferred.Deferred<ReadonlyArray<EditorId>> | undefined;
+
+  const refresh = Effect.fn("externalLauncher.refreshAvailableEditors")(function* (
+    deferred: Deferred.Deferred<ReadonlyArray<EditorId>>,
+  ) {
+    const result = yield* Effect.exit(input.discover);
+    const resolved = yield* gate.withPermit(
+      Effect.gen(function* () {
+        if (inFlight !== deferred) {
+          return cached ?? [];
+        }
+        inFlight = undefined;
+        refreshAfterMillis = (yield* Clock.currentTimeMillis) + cacheTtlMillis;
+        if (Exit.isSuccess(result)) {
+          cached = result.value;
+          return result.value;
+        }
+        yield* Effect.logWarning("Failed to refresh available editors; retaining cached value.", {
+          cause: result.cause,
+        });
+        return cached ?? [];
+      }),
+    );
+    yield* Deferred.succeed(deferred, resolved);
+  });
+
+  return Effect.fn("externalLauncher.resolveAvailableEditorsCached")(function* () {
+    const decision = yield* gate.withPermit(
+      Effect.uninterruptible(
+        Effect.gen(function* () {
+          const now = yield* Clock.currentTimeMillis;
+          if (now < refreshAfterMillis) {
+            return { _tag: "Immediate" as const, value: cached ?? [] };
+          }
+
+          if (!inFlight) {
+            inFlight = yield* Deferred.make<ReadonlyArray<EditorId>>();
+            yield* refresh(inFlight).pipe(Effect.forkIn(scope));
+          }
+
+          return cached !== undefined
+            ? { _tag: "Immediate" as const, value: cached }
+            : { _tag: "Await" as const, deferred: inFlight };
+        }),
+      ),
+    );
+
+    if (decision._tag === "Immediate") {
+      return decision.value;
+    }
+    const completed = yield* Deferred.await(decision.deferred).pipe(
+      Effect.timeoutOption(initialWait),
+    );
+    return Option.getOrElse(completed, () => []);
+  });
+});
+
 /**
  * ExternalLauncher - Service tag for browser/editor launch operations.
  */
@@ -442,9 +520,12 @@ export const make = Effect.gen(function* () {
       Effect.provideService(FileSystem.FileSystem, fileSystem),
       Effect.provideService(Path.Path, path),
     );
+  const resolveAvailableEditorsCached = yield* makeAvailableEditorsResolver({
+    discover: provideCommandResolutionServices(resolveAvailableEditors()),
+  });
 
   return ExternalLauncher.of({
-    resolveAvailableEditors: () => provideCommandResolutionServices(resolveAvailableEditors()),
+    resolveAvailableEditors: resolveAvailableEditorsCached,
     launchBrowser: (target) =>
       launchBrowser(target).pipe(
         Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),

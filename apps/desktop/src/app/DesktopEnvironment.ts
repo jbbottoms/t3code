@@ -77,6 +77,11 @@ export class DesktopEnvironment extends Context.Service<
 >()("@t3tools/desktop/app/DesktopEnvironment") {}
 
 const APP_BASE_NAME = "T3 Code";
+const KAI_DESKTOP_VERSION_PATTERN = /^\d+\.\d+\.\d+-kai\.\d{8}\.\d+$/u;
+
+export function isKaiDesktopVersion(version: string): boolean {
+  return KAI_DESKTOP_VERSION_PATTERN.test(version);
+}
 
 function resolveDesktopAppStageLabel(input: {
   readonly isDevelopment: boolean;
@@ -93,6 +98,14 @@ function resolveDesktopAppBranding(input: {
   readonly isDevelopment: boolean;
   readonly appVersion: string;
 }): DesktopAppBranding {
+  if (!input.isDevelopment && isKaiDesktopVersion(input.appVersion)) {
+    return {
+      baseName: "T3 Code Kai",
+      stageLabel: "Alpha",
+      displayName: "T3 Code Kai",
+    };
+  }
+
   const stageLabel = resolveDesktopAppStageLabel(input);
   return {
     baseName: APP_BASE_NAME,
@@ -156,8 +169,13 @@ const make = Effect.fn("desktop.environment.make")(function* (
   });
   const displayName = branding.displayName;
   const stateDir = path.join(baseDir, isDevelopment ? "dev" : "userdata");
-  const userDataDirName = isDevelopment ? "t3code-dev" : "t3code";
-  const legacyUserDataDirName = isDevelopment ? "T3 Code (Dev)" : "T3 Code (Alpha)";
+  const isKai = !isDevelopment && isKaiDesktopVersion(input.appVersion);
+  const userDataDirName = isDevelopment ? "t3code-dev" : isKai ? "t3code-kai" : "t3code";
+  const legacyUserDataDirName = isDevelopment
+    ? "T3 Code (Dev)"
+    : isKai
+      ? userDataDirName
+      : "T3 Code (Alpha)";
   const resourcesPath = input.resourcesPath;
 
   return DesktopEnvironment.of({
@@ -197,10 +215,18 @@ const make = Effect.fn("desktop.environment.make")(function* (
     branding,
     displayName,
     appUserModelId: Option.getOrElse(config.appUserModelIdOverride, () =>
-      isDevelopment ? "com.t3tools.t3code.dev" : "com.t3tools.t3code",
+      isDevelopment
+        ? "com.t3tools.t3code.dev"
+        : isKai
+          ? "com.jbbottoms.t3code.kai"
+          : "com.t3tools.t3code",
     ),
-    linuxDesktopEntryName: isDevelopment ? "t3code-dev.desktop" : "t3code.desktop",
-    linuxWmClass: isDevelopment ? "t3code-dev" : "t3code",
+    linuxDesktopEntryName: isDevelopment
+      ? "t3code-dev.desktop"
+      : isKai
+        ? "t3code-kai.desktop"
+        : "t3code.desktop",
+    linuxWmClass: isDevelopment ? "t3code-dev" : isKai ? "t3code-kai" : "t3code",
     userDataDirName,
     legacyUserDataDirName,
     defaultDesktopSettings: DesktopAppSettings.resolveDefaultDesktopSettings(input.appVersion),

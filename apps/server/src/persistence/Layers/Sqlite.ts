@@ -8,6 +8,10 @@ import type { SqlError } from "effect/unstable/sql/SqlError";
 import { runMigrations } from "../Migrations.ts";
 import { ServerConfig } from "../../config.ts";
 
+// node:sqlite executes synchronously, so keep lock waiting short enough that a
+// transient writer cannot meaningfully starve the server event loop.
+export const SQLITE_BUSY_TIMEOUT_MILLIS = 50;
+
 type RuntimeSqliteLayerConfig = {
   readonly filename: string;
   readonly spanAttributes?: Record<string, unknown>;
@@ -33,6 +37,7 @@ const makeRuntimeSqliteLayer = Effect.fn("makeRuntimeSqliteLayer")(function* (
 const setup = Layer.effectDiscard(
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
+    yield* sql`PRAGMA busy_timeout = 50;`;
     yield* sql`PRAGMA journal_mode = WAL;`;
     yield* sql`PRAGMA foreign_keys = ON;`;
     yield* runMigrations();
